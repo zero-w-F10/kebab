@@ -7,6 +7,7 @@
 - [`CONTEXT.md`](CONTEXT.md) — 领域术语表。写代码、改设计规格或讨论取舍之前，先读它对齐用词。
 - [`docs/design.md`](docs/design.md) — 设计规格：硬约束、目录布局、数据模型、行为规则。实现任何功能前先读它。
 - [`docs/adr/`](docs/adr/) — 架构决策记录。改动被某条 ADR 覆盖的设计前，先读那条 ADR，否则会推翻一个有意为之的决定。
+- [`docs/authoring.md`](docs/authoring.md) — 操作手册：新增产品原型、加页面、构建、排错、交付。往 `sites/` 里加内容前先读它。
 
 ## 环境
 
