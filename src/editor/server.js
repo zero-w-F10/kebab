@@ -94,6 +94,25 @@ function readJson(req) {
   })
 }
 
+/** 图片这类二进制上传：不解析，直接收成 Buffer。 */
+function readBinary(req) {
+  return new Promise((done, fail) => {
+    const chunks = []
+    let size = 0
+    req.on('data', (chunk) => {
+      size += chunk.length
+      if (size > MAX_BODY) {
+        fail(new BadRequest('文件过大'))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => done(Buffer.concat(chunks)))
+    req.on('error', fail)
+  })
+}
+
 async function handle(req, res, url) {
   const pathname = decodeURIComponent(url.pathname)
 
@@ -102,11 +121,12 @@ async function handle(req, res, url) {
   if (req.method === 'GET' && pathname === '/ui.js') return serveFile(res, join(distDir, 'ui.js'))
   if (req.method === 'GET' && pathname === '/ui.css') return serveFile(res, join(distDir, 'ui.css'))
 
-  // 原型与素材：给 iframe 预览和将来的图片显示用
-  const asset = /^\/(proto|assets)\/([^/]+)\/(.+)$/.exec(pathname)
+  // 原型与素材。编辑器一次只服务一个站点，所以路径里不带 site id：
+  // 正文里写的是 assets/x.png（相对站点根），在编辑器页面上正好落到这里。
+  const asset = /^\/(proto|assets)\/(.+)$/.exec(pathname)
   if (req.method === 'GET' && asset) {
-    const [, kind, id, rest] = asset
-    const dir = store.resolveSite(workspace, id)
+    const [, kind, rest] = asset
+    const dir = store.resolveSite(workspace, defaultSite)
     const root = join(dir, kind === 'proto' ? 'prototypes' : 'assets')
     const file = join(root, rest)
     if (!inside(root, file)) throw new BadRequest(`路径越界：${pathname}`)
@@ -120,8 +140,21 @@ async function handle(req, res, url) {
 
 async function handleApi(req, res, url) {
   const site = url.searchParams.get('site') ?? defaultSite
-  const body = req.method === 'POST' ? await readJson(req) : {}
   const key = `${req.method} ${url.pathname}`
+
+  // 上传的体是二进制，绕过 JSON 解析
+  if (key === 'POST /api/asset/upload') {
+    const buffer = await readBinary(req)
+    return json(res, 200, store.saveAsset(
+      workspace,
+      site,
+      url.searchParams.get('name'),
+      buffer,
+      url.searchParams.get('baseRevision'),
+    ))
+  }
+
+  const body = req.method === 'POST' ? await readJson(req) : {}
 
   switch (key) {
     case 'GET /api/state': {

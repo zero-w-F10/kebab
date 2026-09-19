@@ -7,10 +7,11 @@
   "scripts": {
     "build": "node src/build.js",
     "doctor": "node src/doctor.js",
-    "editor:build": "esbuild src/editor/ui/main.js --bundle --format=esm --outfile=src/editor/ui/dist/ui.js",
+    "editor:build": "esbuild src/editor/ui/main.js --bundle --format=esm --minify --define:__VUE_OPTIONS_API__=false --define:__VUE_PROD_DEVTOOLS__=false --define:__VUE_PROD_HYDRATION_MISMATCH_DETAILS__=false --outfile=src/editor/ui/dist/ui.js",
     "edit": "npm run editor:build && node src/editor/server.js"
   },
   "dependencies": {
+    "@milkdown/crepe": "^7.22.1",
     "markdown-it": "^14.1.0"
   },
   "devDependencies": {

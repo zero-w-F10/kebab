@@ -9,7 +9,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { dirname, join, relative } from 'node:path'
+import { basename, dirname, extname, join, relative } from 'node:path'
 
 import { contentPathOf, doctor, flattenPages, listSites, loadSite } from '../doctor.js'
 
@@ -288,6 +288,34 @@ export function saveDoc(workspace, id, pageId, text, baseRevision) {
   if (page.type !== 'doc') throw new BadRequest(`${pageId} 不是 doc 页`)
   writeFileSync(contentPathOf(dir, page), text, 'utf8')
   return stateOf(workspace, id)
+}
+
+const ASSET_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'])
+const MAX_ASSET_BYTES = 20 * 1024 * 1024
+
+/**
+ * 图片进 assets/：文件名清洗后落盘，重名自动让路 —— 编辑器里粘贴截图走这里。
+ * 同样校验指纹：磁盘已被外部改动时不写盘，免得编辑器带着旧状态继续操作。
+ */
+export function saveAsset(workspace, id, rawName, buffer, baseRevision) {
+  const dir = resolveSite(workspace, id)
+  assertWrite(dir, baseRevision)
+
+  const ext = extname(rawName ?? '').toLowerCase()
+  if (!ASSET_EXT.has(ext)) throw new BadRequest(`不支持的图片类型：${ext || '(没有扩展名)'}`)
+  if (buffer.length === 0) throw new BadRequest('图片是空的')
+  if (buffer.length > MAX_ASSET_BYTES) throw new BadRequest('图片超过 20MB，先压一下再放进来')
+
+  // 中文名留着（截图多半叫「登录页截图.png」），只把路径符号与特殊字符压成短横线
+  const stem = basename(rawName, ext).replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 60)
+  const assets = join(dir, 'assets')
+  mkdirSync(assets, { recursive: true })
+
+  let name = `${stem || 'image'}${ext}`
+  for (let index = 2; existsSync(join(assets, name)); index += 1) name = `${stem || 'image'}-${index}${ext}`
+  writeFileSync(join(assets, name), buffer)
+
+  return { path: `assets/${name}`, ...stateOf(workspace, id) }
 }
 
 /**

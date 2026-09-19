@@ -1,4 +1,5 @@
 import './style.css'
+import { mountDocEditor } from './doc-editor.js'
 
 /**
  * 编辑器前端。刻意用原生 DOM：这一轮的界面只有导航树与一个源码框，
@@ -106,6 +107,9 @@ function markTreeDirty() {
 function notice(text, kind = 'info') {
   state.notice = { kind, text }
 }
+
+/** 当前挂载的块式编辑器（doc 页才有）。重绘时尽量复用它，不重建。 */
+let docEditor = null
 
 const selectedPage = () => {
   if (!state.selected || !state.tree) return null
@@ -263,15 +267,17 @@ function pageNode(mod, page, index) {
 function renderMain() {
   const page = selectedPage()
   if (!page) {
+    teardownDocEditor()
     clear(mainNode, h('div', { class: 'placeholder' },
       h('p', { text: '从左侧选一个页面。' }),
-      h('p', { class: 'dim', text: 'doc 页在这里改 Markdown 源码；proto 页在这里预览原型。' })))
+      h('p', { class: 'dim', text: 'doc 页在这里改正文；proto 页在这里预览原型。' })))
     return
   }
 
   if (page.type === 'proto') {
+    teardownDocEditor()
     const entry = page.entry ?? 'index.html'
-    const src = `/proto/${state.siteId}/${page.id}/${entry}`
+    const src = `/proto/${page.id}/${entry}`
     clear(mainNode, h('div', { class: 'pane' },
       h('div', { class: 'pane-head' },
         h('span', { class: 'code', text: page.code ?? '' }),
@@ -283,23 +289,76 @@ function renderMain() {
     return
   }
 
-  clear(mainNode, h('div', { class: 'pane' },
-    h('div', { class: 'pane-head' },
+  // 编辑器是重量级对象，重绘时不重建它，只更新头部那几处文字
+  if (docEditor && docEditor.pageId === page.id && docEditor.host.isConnected) {
+    docEditor.head.replaceChildren(
       h('span', { class: 'code', text: page.code ?? '' }),
       h('strong', { text: page.title }),
       h('span', { class: 'dim', text: `pages/${page.id}.md` }),
-      h('span', { class: 'dim', text: '正文从 ## 开始，编号渲染时自动算' })),
-    h('textarea', {
-      class: 'doc-source',
-      spellcheck: 'false',
-      value: state.doc.text ?? '',
-      oninput: (event) => {
-        state.doc.text = event.target.value
-        state.doc.dirty = true
-        updateStatus()
-      },
-    }),
-  ))
+      h('span', { class: 'dim', text: '正文从 ## 开始，编号渲染时自动算' }),
+    )
+    return
+  }
+
+  teardownDocEditor()
+  const host = h('div', { class: 'doc-host' })
+  const head = h('div', { class: 'pane-head' })
+  clear(mainNode, h('div', { class: 'pane' }, head, host))
+  mountEditor(page, host, head)
+}
+
+/** 挂载块式编辑器。切换页面与重绘都只发生在挂载前后，编辑中不重建。 */
+async function mountEditor(page, host, head) {
+  docEditor = { pageId: page.id, host, head, handle: null }
+  const handle = await mountDocEditor({
+    root: host,
+    markdown: state.doc.text ?? '',
+    onUpload: uploadImage,
+    onChange: (markdown) => {
+      state.doc.text = markdown
+      state.doc.dirty = true
+      updateStatus()
+    },
+  })
+  if (!host.isConnected) {
+    // 挂载期间用户已经切走了
+    await handle.destroy()
+    return
+  }
+  docEditor.handle = handle
+  renderMain()
+}
+
+function teardownDocEditor() {
+  if (!docEditor) return
+  docEditor.handle?.destroy?.()
+  docEditor = null
+}
+
+/** 取编辑器里的 Markdown。万一取不到就退回内存副本 —— 宁可保存旧一点，也别丢改动。 */
+function readEditorMarkdown() {
+  try {
+    return docEditor?.handle?.getMarkdown() ?? state.doc.text
+  } catch (error) {
+    console.warn('[kebab] 从编辑器取 Markdown 失败，改用内存副本：', error)
+    return state.doc.text
+  }
+}
+
+/** 截图等图片经这里落进 assets/，返回正文里该写的相对路径。 */
+async function uploadImage(file) {
+  const query = new URLSearchParams({ name: file.name || 'paste.png', baseRevision: state.revision })
+  const response = await fetch(`/api/asset/upload?${query}`, { method: 'POST', body: file })
+  const payload = await response.json().catch(() => ({}))
+  if (response.status === 409) {
+    markStale()
+    throw new Error('磁盘内容已被外部改动，请先重载')
+  }
+  if (!response.ok) throw new Error(payload.error ?? `上传失败（HTTP ${response.status}）`)
+  state.revision = payload.revision
+  state.problems = payload.problems ?? state.problems
+  renderFoot()
+  return payload.path
 }
 
 function renderFoot() {
@@ -490,8 +549,10 @@ const saveAll = () => run(async () => {
     applyState(payload)
   }
   if (state.doc.dirty && state.doc.id) {
-    const payload = await api.saveDoc(state.doc.id, state.doc.text)
+    const text = readEditorMarkdown()
+    const payload = await api.saveDoc(state.doc.id, text)
     state.doc.dirty = false
+    state.doc.text = text
     applyState(payload)
   }
   notice('已保存')
