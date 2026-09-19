@@ -88,6 +88,8 @@ export function doctor(dir, site) {
       if (!declared.has(id)) {
         problems.push({
           kind: 'orphan',
+          // path 给编辑器用：它要凭这个路径把孤儿文件导入或删除
+          path: `${sub}/${name}`,
           message: `孤儿文件：${sub}/${name} 没有被清单引用`,
         })
       }

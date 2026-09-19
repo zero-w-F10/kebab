@@ -80,7 +80,7 @@ kebab/                        # 工具代码仓库（git）
 
 **编号**
 
-- page code 存在 `code` 里，分配后锁死；重排序不改号，删 page 不复用号，新 page 取 module 内最大流水 +1
+- page code 存在 `code` 里，分配后锁死；重排序不改号；新 page 取 module 内最大流水 +1。删掉中间某页不会让后面的号补位，而删掉模块内末尾的号之后再新建会拿回那个号
 - section number 由渲染时按标题层级算出：`##` → `1`，`###` → `1.1`
 - 跨页引用靠锚点：`dist/<page-id>.html#<page-id>-1-2`
 
@@ -93,6 +93,24 @@ kebab/                        # 工具代码仓库（git）
 **构建范围**：`npm run build` 构建全部 site；`npm run build <site-id>...` 只构建指定的一批。任一 site 失败即中止，门户页不更新；门户页把尚未构建的 site 标出来且不可点。
 
 **导入校验**：原型目录进库前扫描四类问题——`<script type="module">`、`fetch`/`XMLHttpRequest` 读本地资源、公网 CDN 引用、引用了却在原型目录里找不到的本地资源（含以 `/` 开头、在 `file://` 下会指向磁盘根的路径）。判定只取会真正发起请求的位置：HTML 的资源属性、CSS 与 JS 的 `url()`、`@import`；普通文本里的 URL 不算。报告对每类问题附一句处理建议。发现问题即中止构建，`--force` 可强制通过。见 [ADR-0007](adr/0007-prototype-import-check.md)。
+
+## 编辑器
+
+本地服务加浏览器 UI，用来改 `site.json` 与 doc 页正文。
+
+```
+npm run edit -- --site <site-id>      # sites/ 下只有一个产品原型时可省掉 --site
+```
+
+- 服务端用 Node 内置的 `http`，不引框架，只监听 `127.0.0.1`；默认端口 4173，被占用就往后递推
+- 前端是手写的 ES module，由 esbuild 打成一个包（产物在 `src/editor/ui/dist/`，不入 git）。引入打包器是为了下一步换 Markdown-first 内核（[ADR-0004](adr/0004-wysiwyg-over-markdown.md)），不是为了这一轮的界面
+- 能改：module 与 page 的增删、标题、顺序。拖拽排序只在同一层内进行——module 之间排 module，module 内排 page；page 不跨 module 搬，因为 `code` 前缀与模块绑定
+- `page id` 决定文件位置，分配后不要改；`code` 由编辑器按模块内最大流水分配，同样锁死
+- 新建 doc 页会落一个空的 `pages/<id>.md`；新建 proto 页只建目录，原型要自己放进去——放之前 doctor 会报 dangling，编辑器把它标成待放原型
+- 保存是手动的（`Ctrl+S` 同效）。保存前跑一次 doctor：`duplicate` 拦下，dangling 与 orphan 只提示
+- orphan file 的两个出口都在编辑器里：**导入为页面**（只往清单加一条，文件原地不动）、**删除文件**
+- 陈旧写入：内存状态持有指纹——`site.json` 内容加 `pages/`、`assets/` 下每个文件的内容哈希。保存时把指纹带上，服务端比对不符即拒绝（409），前端提示重载；另有每两秒一次的轮询，发现外部改动就把状态标成陈旧并拦下保存。见 [ADR-0006](adr/0006-stale-write-guard.md)
+- 尚未实现：doc 正文的块式所见即所得与图片粘贴（ADR-0004 要求的那套），现在是一块 Markdown 源码框
 
 ## 范围边界
 

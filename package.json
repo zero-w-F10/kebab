@@ -6,9 +6,14 @@
   "description": "把 AI 导出的 HTML 原型、界面截图说明、流程图串成一份带导航树的静态站点",
   "scripts": {
     "build": "node src/build.js",
-    "doctor": "node src/doctor.js"
+    "doctor": "node src/doctor.js",
+    "editor:build": "esbuild src/editor/ui/main.js --bundle --format=esm --outfile=src/editor/ui/dist/ui.js",
+    "edit": "npm run editor:build && node src/editor/server.js"
   },
   "dependencies": {
     "markdown-it": "^14.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
   }
 }

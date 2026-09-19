@@ -15,6 +15,6 @@
 
 ## 状态
 
-构建管线支持多个产品原型：`npm run doctor` 核对全部，`npm run build [site-id...]` 产出各自的 `sites/<id>/dist/` 与根门户页。编辑器（本地服务加浏览器 UI）尚未实现。
+构建管线支持多个产品原型：`npm run doctor` 核对全部，`npm run build [site-id...]` 产出各自的 `sites/<id>/dist/` 与根门户页。编辑器用 `npm run edit -- --site <id>` 启动：能改导航树（增删、排序、标题）与 doc 正文源码，orphan 的导入/删除出口也在那里。doc 正文的块式所见即所得（ADR-0004）尚未实现，现在是一块 Markdown 源码框。
 
 `dist/` 是生成物，手改会在下一次构建被覆盖。
