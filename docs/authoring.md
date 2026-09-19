@@ -51,6 +51,8 @@ npm run build -- <site-id>   # 只构建指定的，可给多个
 
 产出 `sites/<id>/dist/`（自包含）和根 `dist/index.html`（门户页）。
 
+编辑器顶栏也有「构建」，构建完能在弹层里直接点开产物预览 —— 改了内容想立刻看交付效果时不用切终端。
+
 ### 6. 验证
 
 双击 `sites/<id>/dist/index.html`，逐项确认：

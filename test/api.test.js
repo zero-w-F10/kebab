@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -172,4 +172,43 @@ test('orphan 的导入与删除走 HTTP 也是通的', async (t) => {
   const removed = await api.post('/api/page/delete', { id: 'orphan-page', withFiles: true, baseRevision: imported.body.revision })
   assert.equal(removed.status, 200)
   assert.ok(!existsSync(join(api.dir, 'pages', '多出来的.md')))
+})
+
+test('POST /api/build 与 npm run build 同路，产物能经 /build/ 预览', async (t) => {
+  const api = await serve(t)
+
+  const built = await api.post('/api/build', {})
+  assert.equal(built.status, 200)
+  assert.equal(built.body.ok, true)
+  assert.equal(built.body.pages, 2)
+  assert.equal(built.body.forced, false)
+
+  assert.equal((await api.fetch('/build/index.html')).status, 200)
+  assert.equal((await api.fetch('/build/login-doc.html')).status, 200)
+  assert.equal((await api.fetch('/build/没有这个.html')).status, 404)
+  assert.equal(await api.rawStatus('/build/%2e%2e%2f%2e%2e%2fsite.json'), 400)
+})
+
+test('构建失败的两种原因都如实报回来，force 才放行', async (t) => {
+  const api = await serve(t)
+
+  // 一：清单与磁盘不一致
+  write(api.workspace, 'sites/demo/pages/extra.md', '## 孤儿\n')
+  const broken = await api.post('/api/build', {})
+  assert.equal(broken.body.ok, false)
+  assert.equal(broken.body.stage, 'doctor')
+  assert.ok(broken.body.problems.some((problem) => problem.kind === 'orphan'))
+
+  // 换成原型里的 module script
+  rmSync(join(api.dir, 'pages', 'extra.md'))
+  write(api.workspace, 'sites/demo/prototypes/login-proto/index.html', '<script type="module" src="a.js"></script>')
+
+  const blocked = await api.post('/api/build', {})
+  assert.equal(blocked.body.ok, false)
+  assert.equal(blocked.body.stage, 'import-check')
+
+  const forced = await api.post('/api/build', { force: true })
+  assert.equal(forced.body.ok, true)
+  assert.equal(forced.body.forced, true)
+  assert.equal((await api.fetch('/build/index.html')).status, 200)
 })

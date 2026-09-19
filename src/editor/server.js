@@ -3,6 +3,7 @@ import { createServer } from 'node:http'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { buildSite } from '../build.js'
 import { listSites } from '../doctor.js'
 import { BadRequest, StaleWrite, siteSummaries, stateOf } from './store.js'
 import * as store from './store.js'
@@ -130,6 +131,12 @@ export function createEditorServer({ workspace, site, uiDir = defaultUiDir }) {
       switch (key) {
         case 'GET /api/state':
           return json(res, 200, { sites: siteSummaries(workspace), ...stateOf(workspace, site) })
+        case 'POST /api/build':
+          return json(res, 200, buildSite(
+            workspace,
+            { id: site, dir: store.resolveSite(workspace, site) },
+            { force: Boolean(body.force) },
+          ))
         case 'GET /api/doc':
           return json(res, 200, store.readDoc(workspace, site, url.searchParams.get('id')))
         case 'POST /api/tree':
@@ -170,6 +177,16 @@ export function createEditorServer({ workspace, site, uiDir = defaultUiDir }) {
       const dir = store.resolveSite(workspace, site)
       const root = join(dir, kind === 'proto' ? 'prototypes' : 'assets')
       const file = join(root, rest)
+      if (!inside(root, file)) throw new BadRequest(`路径越界：${pathname}`)
+      return serveFile(res, file)
+    }
+
+    // 构建产物的预览：编辑器里直接看「发出去长什么样」，相对路径也走得通
+    const built = /^\/build\/(.+)$/.exec(pathname)
+    if (req.method === 'GET' && built) {
+      const dir = store.resolveSite(workspace, site)
+      const root = join(dir, 'dist')
+      const file = join(root, built[1])
       if (!inside(root, file)) throw new BadRequest(`路径越界：${pathname}`)
       return serveFile(res, file)
     }

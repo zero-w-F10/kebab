@@ -78,6 +78,7 @@ const api = {
   deletePage: (id, withFiles) => request('POST', '/api/page/delete', { body: { id, withFiles, ...base() } }),
   createModule: (payload) => request('POST', '/api/module/create', { body: { ...payload, ...base() } }),
   deleteModule: (id, withFiles) => request('POST', '/api/module/delete', { body: { id, withFiles, ...base() } }),
+  build: (force) => request('POST', '/api/build', { body: { force } }),
   importOrphan: (payload) => request('POST', '/api/orphan/import', { body: { ...payload, ...base() } }),
   deleteOrphan: (path) => request('POST', '/api/orphan/delete', { body: { path, ...base() } }),
 }
@@ -178,6 +179,7 @@ function renderBar() {
     h('div', { class: 'bar-right' },
       h('span', { id: 'notice' }),
       h('span', { id: 'status' }),
+      h('button', { id: 'build', class: 'ghost', text: '构建', title: '把当前站点的内容构建成 sites/<id>/dist/', onclick: () => runBuild() }),
       h('button', { id: 'reload', class: 'ghost', text: '重载', onclick: reload }),
       h('button', { id: 'save', text: '保存', onclick: saveAll }),
     ),
@@ -451,6 +453,84 @@ function dropPage(page, event) {
 }
 
 /* ---------- 弹层 ---------- */
+
+/** 只展示不提交的弹层：构建结果这类东西用得上。 */
+function openPanel(title, nodes, actions = []) {
+  modalNode.replaceChildren(h('div', {
+    class: 'modal-backdrop',
+    onclick: (event) => {
+      if (event.target === event.currentTarget) closeModal()
+    },
+  },
+    h('div', { class: 'modal-box' },
+      h('h2', { text: title }),
+      ...nodes,
+      h('div', { class: 'modal-actions' },
+        ...actions,
+        h('button', { type: 'button', class: 'ghost', text: '关闭', onclick: closeModal }),
+      ),
+    ),
+  ))
+}
+
+/** 构建当前站点：走的是与 npm run build 同一条代码路径。 */
+async function runBuild(force = false) {
+  const hasUnsaved = [state.treeDirty, state.doc.dirty].some(Boolean)
+  if (hasUnsaved) {
+    if (!window.confirm('有还没保存的改动。先保存再构建？')) return
+    await saveAll()
+    if ([state.treeDirty, state.doc.dirty].some(Boolean)) return
+  }
+
+  state.notice = null
+  try {
+    openBuildReport(await api.build(force))
+  } catch (error) {
+    notice(error.message, 'error')
+    render()
+  }
+}
+
+function openBuildReport(result) {
+  const nodes = []
+
+  if (result.ok) {
+    nodes.push(h('p', { text: `${result.id} 构建完成：${result.pages} 个页面 + 概览页` }))
+    nodes.push(h('p', { class: 'dim', text: `${result.dist}/` }))
+    nodes.push(h('p', {}, h('a', { href: '/build/index.html', target: '_blank', rel: 'noopener', text: '打开产物里的概览页' })))
+    if (result.forced) {
+      nodes.push(h('p', { class: 'dim', text: '是按「强制构建」放行的，下面这些问题并没有修。' }))
+    }
+  } else {
+    nodes.push(h('p', {
+      text: result.stage === 'doctor'
+        ? '清单与磁盘不一致，没有构建。'
+        : '原型导入校验没过，没有构建。',
+    }))
+  }
+
+  if (result.problems?.length) {
+    nodes.push(h('ul', { class: 'problems' }, ...result.problems.map((problem) => h('li', { class: 'problem' },
+      h('span', { class: 'tag', text: problem.kind }),
+      h('span', { text: problem.message }),
+      problem.hint ? h('span', { class: 'dim', text: `→ ${problem.hint}` }) : null,
+    ))))
+  }
+
+  const actions = result.ok ? [] : [
+    h('button', {
+      type: 'button',
+      class: 'danger',
+      text: '强制构建',
+      onclick: () => {
+        closeModal()
+        runBuild(true)
+      },
+    }),
+  ]
+
+  openPanel('构建结果', nodes, actions)
+}
 
 function closeModal() {
   modalNode.replaceChildren()

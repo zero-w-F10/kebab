@@ -110,6 +110,7 @@ npm run edit -- --site <site-id>      # sites/ 下只有一个产品原型时可
 - 新建 doc 页会落一个空的 `pages/<id>.md`；新建 proto 页只建目录，原型要自己放进去——放之前 doctor 会报 dangling，编辑器把它标成待放原型
 - 保存是手动的（`Ctrl+S` 同效）。保存前跑一次 doctor：`duplicate` 拦下，dangling 与 orphan 只提示
 - orphan file 的两个出口都在编辑器里：**导入为页面**（只往清单加一条，文件原地不动）、**删除文件**
+- 顶栏的「构建」构建当前站点，走的是与 `npm run build` 同一条代码路径：结果里列出问题与处理建议，并给一个产物预览入口（`/build/` 路由直接读 `sites/<id>/dist/`）。构建前若还有没保存的改动，先问一句要不要保存
 - 陈旧写入：内存状态持有指纹——`site.json` 内容加 `pages/`、`assets/` 下每个文件的内容哈希。保存时把指纹带上，服务端比对不符即拒绝（409），前端提示重载；另有每两秒一次的轮询，发现外部改动就把状态标成陈旧并拦下保存。见 [ADR-0006](adr/0006-stale-write-guard.md)
 - doc 正文是块式所见即所得（Milkdown 的 Crepe，见 [ADR-0004](adr/0004-wysiwyg-over-markdown.md)）。磁盘上仍是纯 Markdown：打开 demo 的正文再序列化回来一字不差，SVN diff 不会凭空多出改动
 - 图片走 `assets/`：粘贴或拖进正文的截图自动落盘，正文里写 `assets/<文件名>`（相对站点根，与产物路径一致）。重名自动加序号，只收 png/jpg/jpeg/gif/webp/svg，单张上限 20MB。保存时还有一道兜底：正文里若仍留着内联 base64 图片（编辑器某条路径没走上传），落盘前一样搬进 `assets/` 并改掉路径 —— 正文里永远不出现 base64
