@@ -92,9 +92,7 @@ kebab/                        # 工具代码仓库（git）
 
 **构建范围**：`npm run build` 构建全部 site；`npm run build <site-id>...` 只构建指定的一批。任一 site 失败即中止，门户页不更新；门户页把尚未构建的 site 标出来且不可点。
 
-**导入校验**：原型目录进库前扫描三类问题——`<script type="module">`、`fetch`/`XMLHttpRequest` 读本地资源、公网 CDN 引用。发现问题即中止构建，`--force` 可强制通过。见 [ADR-0007](adr/0007-prototype-import-check.md)。
-
-尚未实现的欠账：ADR-0007 还要求检测「原型内部引用却不存在的资源」，以及给出处理建议，两者都还没做。
+**导入校验**：原型目录进库前扫描四类问题——`<script type="module">`、`fetch`/`XMLHttpRequest` 读本地资源、公网 CDN 引用、引用了却在原型目录里找不到的本地资源（含以 `/` 开头、在 `file://` 下会指向磁盘根的路径）。判定只取会真正发起请求的位置：HTML 的资源属性、CSS 与 JS 的 `url()`、`@import`；普通文本里的 URL 不算。报告对每类问题附一句处理建议。发现问题即中止构建，`--force` 可强制通过。见 [ADR-0007](adr/0007-prototype-import-check.md)。
 
 ## 范围边界
 

@@ -24,6 +24,10 @@ const report = (heading, lines) => {
   console.error('')
 }
 
+/** 一个问题两行：先指位置，再给出口。 */
+const describe = (problem) => `[${problem.kind}] ${problem.message}`
+  + (problem.hint ? `\n      → ${problem.hint}` : '')
+
 const allSites = listSites(workspace)
 if (allSites.length === 0) {
   report('构建中止：sites/ 下没有任何产品原型', [
@@ -50,7 +54,7 @@ function buildSite(id, dir) {
 
   const problems = doctor(dir, site)
   if (problems.length > 0) {
-    report(`[${id}] doctor 发现清单与磁盘不一致`, problems.map((p) => `[${p.kind}] ${p.message}`))
+    report(`[${id}] doctor 发现清单与磁盘不一致`, problems.map(describe))
     return false
   }
 
@@ -58,7 +62,7 @@ function buildSite(id, dir) {
     .filter((page) => page.type === 'proto')
     .flatMap((page) => checkPrototype(join(dir, 'prototypes', page.id)))
   if (protoProblems.length > 0) {
-    report(`[${id}] 原型导入校验发现问题`, protoProblems.map((p) => `[${p.kind}] ${p.message}`))
+    report(`[${id}] 原型导入校验发现问题`, protoProblems.map(describe))
     if (!force) return false
     console.error(`[${id}] 已按 --force 继续构建。\n`)
   }
