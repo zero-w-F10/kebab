@@ -1,21 +1,9 @@
 import { Crepe } from '@milkdown/crepe'
+import { remarkStringifyOptionsCtx } from '@milkdown/kit/core'
 import { replaceAll } from '@milkdown/kit/utils'
 import { uploadConfig } from '@milkdown/kit/plugin/upload'
 
-// 按需引主题，而不是整个 theme/common/style.css：那一份会把 latex 的样式
-// （以及 katex 的字体文件）一并拖进来，而我们禁用了公式功能。
-import '@milkdown/crepe/theme/common/prosemirror.css'
-import '@milkdown/crepe/theme/common/reset.css'
-import '@milkdown/crepe/theme/common/block-edit.css'
-import '@milkdown/crepe/theme/common/code-mirror.css'
-import '@milkdown/crepe/theme/common/cursor.css'
-import '@milkdown/crepe/theme/common/image-block.css'
-import '@milkdown/crepe/theme/common/link-tooltip.css'
-import '@milkdown/crepe/theme/common/list-item.css'
-import '@milkdown/crepe/theme/common/placeholder.css'
-import '@milkdown/crepe/theme/common/toolbar.css'
-import '@milkdown/crepe/theme/common/table.css'
-import '@milkdown/crepe/theme/classic.css'
+// 主题 CSS 由 main.js 引 —— 这个文件保持纯 JS，node 才能直接 import 它来测
 
 /**
  * doc 页的块式编辑器，见 docs/adr/0004。
@@ -30,6 +18,9 @@ const FEATURES = {
   [Crepe.Feature.Latex]: false,
   [Crepe.Feature.AI]: false,
   [Crepe.Feature.TopBar]: false,
+  // 它的图片块会把 ![说明](…) 的 alt 改写成 ![1.00](…)、还会在图片前后塞 <br /> ——
+  // 源文件不该被这样改写。关掉之后图片退回普通 image 节点，粘贴上传照走 upload 插件。
+  [Crepe.Feature.ImageBlock]: false,
 }
 
 const featureConfigs = (onUpload) => ({
@@ -56,6 +47,7 @@ export async function mountDocEditor({ root, markdown, onUpload, onChange }) {
       features: FEATURES,
       featureConfigs: featureConfigs(onUpload),
     })
+    tuneSerialization(crepe)
     crepe.on((listener) => listener.markdownUpdated((_ctx, next) => onChange(next)))
     if (wirePasteUpload) wirePasteUploader(crepe, onUpload)
     await crepe.create()
@@ -74,10 +66,21 @@ export async function mountDocEditor({ root, markdown, onUpload, onChange }) {
   }
 
   return {
-    getMarkdown: () => crepe.getMarkdown(),
+    // 序列化会在末尾多留一个空行，统一成「文件以一个换行结尾」
+    getMarkdown: () => crepe.getMarkdown().replace(/\n+$/, '\n'),
     setMarkdown: (next) => crepe.editor.action(replaceAll(next ?? '', true)),
     destroy: () => crepe.destroy(),
   }
+}
+
+/**
+ * 让序列化贴近人工写法。remark-stringify 默认把列表符号写成 `*`，
+ * 每次保存都会凭空改一行 —— 保存应当只写用户真正改动的地方。
+ */
+function tuneSerialization(crepe) {
+  crepe.editor.config((ctx) => {
+    ctx.update(remarkStringifyOptionsCtx, (prev) => ({ ...prev, bullet: '-' }))
+  })
 }
 
 /** 粘贴、拖入编辑器主体的图片也走上传，而不是被内联成 base64。 */

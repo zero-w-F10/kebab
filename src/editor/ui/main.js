@@ -1,4 +1,18 @@
 import './style.css'
+// Crepe 的主题按需引，不带 latex（那一份会拖进 katex 字体）。放这里而不是
+// doc-editor.js，是为了让后者保持纯 JS —— 测试能直接 import 它。
+import '@milkdown/crepe/theme/common/prosemirror.css'
+import '@milkdown/crepe/theme/common/reset.css'
+import '@milkdown/crepe/theme/common/block-edit.css'
+import '@milkdown/crepe/theme/common/code-mirror.css'
+import '@milkdown/crepe/theme/common/cursor.css'
+import '@milkdown/crepe/theme/common/image-block.css'
+import '@milkdown/crepe/theme/common/link-tooltip.css'
+import '@milkdown/crepe/theme/common/list-item.css'
+import '@milkdown/crepe/theme/common/placeholder.css'
+import '@milkdown/crepe/theme/common/toolbar.css'
+import '@milkdown/crepe/theme/common/table.css'
+import '@milkdown/crepe/theme/classic.css'
 import { mountDocEditor } from './doc-editor.js'
 
 /**

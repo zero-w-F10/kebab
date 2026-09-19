@@ -194,6 +194,9 @@ input:focus, select:focus { outline: 2px solid #cddcff; border-color: var(--acce
   --crepe-font-default: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
 }
 
+/* 关掉 ImageBlock 之后图片退回普通 image 节点，给它一个宽度约束 */
+.doc-host img { max-width: 100%; height: auto; }
+
 .proto-frame { flex: 1 1 auto; width: 100%; border: 0; background: #fff; }
 
 /* ---------- 底栏：核对 ---------- */
