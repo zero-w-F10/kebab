@@ -66,6 +66,7 @@ kebab/                        # 工具代码仓库（git）
 
 - doc 页正文 = `pages/<id>.md`
 - proto 页原型目录 = `prototypes/<id>/`，入口 = `index.html`（可用 `entry` 字段覆盖）
+- `id`（module 与 page 都一样）只收小写英文、数字与短横线，且以字母或数字开头 —— 它会进文件名，也会进跨页锚点 `#<page-id>-1-2`
 - doc 页图片 = `assets/`；正文里按站点根书写（`assets/x.svg`，不是 `../assets/x.svg`），源与产物的路径因此完全一致
 
 导航树只有两层：module → page。嵌套 module 暂不支持。

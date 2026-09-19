@@ -128,6 +128,7 @@ npm run edit -- --site <site-id>      # sites/ 下只有一个产品原型时可
 | `找不到原型入口 prototypes/<id>/index.html` | proto 页缺 page id 那一层目录，或入口文件名不对 | 内容放进 `prototypes/<id>/`；入口不是 `index.html` 就写 `entry` |
 | `孤儿文件：pages/xxx.md` | 文件建了，清单里没有 | 在 `site.json` 加一条，或删掉文件 |
 | `孤儿文件：prototypes/xxx` | 同上 | 同上 |
+| `推导出的 page id 不合规：xxx` | 孤儿文件的文件名当不了 page id（只收小写英文、数字、短横线） | 把文件改成英文名再导入，或直接删掉 |
 | `id 重复` / `code 重复` | 两处用了同一个标识 | 改掉其中一个。`code` 分配后本不该变 |
 | `引用了 N 个原型目录里没有的文件` | 原型导出时就没带上这些文件，拷贝时又漏了 | 把缺的文件补进 `prototypes/<page-id>/` 的对应位置；补不齐就让 AI 重新导出 |
 | `以 / 开头引用本地资源` | 路径写成了站点绝对路径 | 改成相对路径，如 `./assets/logo.png` |

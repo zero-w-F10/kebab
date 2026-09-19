@@ -15,6 +15,6 @@
 
 ## 状态
 
-构建管线支持多个产品原型：`npm run doctor` 核对全部，`npm run build [site-id...]` 产出各自的 `sites/<id>/dist/` 与根门户页。编辑器用 `npm run edit -- --site <id>` 启动：能改导航树（增删、排序、标题），doc 正文是块式所见即所得（Milkdown Crepe），粘贴的截图自动落 `assets/`；orphan 的导入/删除出口也在那里。
+构建管线支持多个产品原型：`npm run doctor` 核对全部，`npm run build [site-id...]` 产出各自的 `sites/<id>/dist/` 与根门户页。`npm test` 跑回归（`test/` 下四个文件：doctor 规则、导入校验、编辑器数据层、服务端接口）。编辑器用 `npm run edit -- --site <id>` 启动：能改导航树（增删、排序、标题），doc 正文是块式所见即所得（Milkdown Crepe），粘贴的截图自动落 `assets/`；orphan 的导入/删除出口也在那里。
 
 `dist/` 是生成物，手改会在下一次构建被覆盖。
