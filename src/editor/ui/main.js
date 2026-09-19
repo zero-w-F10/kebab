@@ -543,19 +543,27 @@ async function select(page) {
 }
 
 const saveAll = () => run(async () => {
+  let rescued = 0
   if (state.treeDirty) {
     const payload = await api.saveTree(state.tree)
     state.treeDirty = false
     applyState(payload)
   }
   if (state.doc.dirty && state.doc.id) {
-    const text = readEditorMarkdown()
-    const payload = await api.saveDoc(state.doc.id, text)
+    const payload = await api.saveDoc(state.doc.id, readEditorMarkdown())
     state.doc.dirty = false
-    state.doc.text = text
     applyState(payload)
+    rescued = payload.rescued ?? 0
+    if (rescued > 0) {
+      // 落盘时把内联图片搬进了 assets/，编辑器内存里还是 base64，换成搬完的版本
+      const fresh = await api.doc(state.doc.id)
+      state.doc.text = fresh.text ?? ''
+      docEditor?.handle?.setMarkdown(state.doc.text)
+    } else {
+      state.doc.text = readEditorMarkdown()
+    }
   }
-  notice('已保存')
+  notice(rescued > 0 ? `已保存；顺手把 ${rescued} 张内联图片搬进了 assets/` : '已保存')
   return null
 })
 

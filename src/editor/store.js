@@ -286,8 +286,9 @@ export function saveDoc(workspace, id, pageId, text, baseRevision) {
   const page = flattenPages(loadSite(dir)).find((entry) => entry.id === pageId)
   if (!page) throw new BadRequest(`清单里没有这个 page：${pageId}`)
   if (page.type !== 'doc') throw new BadRequest(`${pageId} 不是 doc 页`)
-  writeFileSync(contentPathOf(dir, page), text, 'utf8')
-  return stateOf(workspace, id)
+  const { text: body, rescued } = externalizeInlineImages(dir, text)
+  writeFileSync(contentPathOf(dir, page), body, 'utf8')
+  return { rescued, ...stateOf(workspace, id) }
 }
 
 const ASSET_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'])
@@ -307,15 +308,41 @@ export function saveAsset(workspace, id, rawName, buffer, baseRevision) {
   if (buffer.length > MAX_ASSET_BYTES) throw new BadRequest('图片超过 20MB，先压一下再放进来')
 
   // 中文名留着（截图多半叫「登录页截图.png」），只把路径符号与特殊字符压成短横线
-  const stem = basename(rawName, ext).replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 60)
+  const name = writeAsset(dir, basename(rawName, ext), ext, buffer)
+  return { path: `assets/${name}`, ...stateOf(workspace, id) }
+}
+
+/** 落一个素材文件：文件名清洗、重名让路，返回最终文件名。 */
+function writeAsset(dir, stem, ext, buffer) {
+  const safe = (stem ?? '').replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 60) || 'image'
   const assets = join(dir, 'assets')
   mkdirSync(assets, { recursive: true })
 
-  let name = `${stem || 'image'}${ext}`
-  for (let index = 2; existsSync(join(assets, name)); index += 1) name = `${stem || 'image'}-${index}${ext}`
+  let name = `${safe}${ext}`
+  for (let index = 2; existsSync(join(assets, name)); index += 1) name = `${safe}-${index}${ext}`
   writeFileSync(join(assets, name), buffer)
+  return name
+}
 
-  return { path: `assets/${name}`, ...stateOf(workspace, id) }
+const INLINE_IMAGE = /!\[([^\]]*)\]\(data:image\/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)\)/g
+const DATA_EXT = { png: '.png', jpeg: '.jpg', jpg: '.jpg', gif: '.gif', webp: '.webp', 'svg+xml': '.svg' }
+
+/**
+ * 正文里不该出现内联 base64：那是编辑器把图片直接塞进文本的后果，
+ * md 会膨胀，SVN diff 会变成一团乱码。落盘前把这类图片抽成 assets/ 里的文件，
+ * 兜住任何一条没走上传的粘贴路径 —— 正确性不该取决于浏览器把事件派发给了谁。
+ */
+function externalizeInlineImages(dir, text) {
+  let rescued = 0
+  const next = text.replace(INLINE_IMAGE, (whole, alt, subtype, payload) => {
+    const ext = DATA_EXT[subtype.toLowerCase()]
+    if (!ext) return whole
+    const buffer = Buffer.from(payload.replace(/\s+/g, ''), 'base64')
+    if (buffer.length === 0 || buffer.length > MAX_ASSET_BYTES) return whole
+    rescued += 1
+    return `![${alt}](assets/${writeAsset(dir, 'pasted', ext, buffer)})`
+  })
+  return { text: next, rescued }
 }
 
 /**
