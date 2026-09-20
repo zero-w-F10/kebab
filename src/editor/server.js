@@ -4,7 +4,8 @@ import { dirname, extname, join, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { buildSite } from '../build.js'
-import { listSites } from '../doctor.js'
+import { listSites, loadSite } from '../doctor.js'
+import { esc } from '../layout.js'
 import { BadRequest, StaleWrite, siteSummaries, stateOf } from './store.js'
 import * as store from './store.js'
 
@@ -155,19 +156,37 @@ export function createEditorServer({ workspace, site, uiDir = defaultUiDir }) {
           return json(res, 200, store.importOrphan(workspace, site, body, body.baseRevision))
         case 'POST /api/orphan/delete':
           return json(res, 200, store.deleteOrphan(workspace, site, body.path, body.baseRevision))
+        case 'POST /api/asset/delete':
+          return json(res, 200, store.deleteUnusedAsset(workspace, site, body.path, body.baseRevision))
         default:
           return json(res, 404, { error: `没有这个接口：${key}` })
       }
     })
   }
 
+  /** 编辑器页面：标题换成「站点名 - Kebab 编辑器」，其余原样交给浏览器。 */
+  function serveEditorPage(res) {
+    const file = join(uiDir, 'index.html')
+    if (!existsSync(file) || statSync(file).isDirectory()) return notFound(res)
+    const title = loadSite(store.resolveSite(workspace, site)).site?.title || site
+    const html = readFileSync(file, 'utf8').replace(
+      /<title>[\s\S]*?<\/title>/,
+      `<title>${esc(title)} - Kebab 编辑器</title>`,
+    )
+    res.writeHead(200, { 'content-type': MIME['.html'], 'cache-control': 'no-store' })
+    res.end(html)
+  }
+
   async function handle(req, res, url) {
     const pathname = decodeURIComponent(url.pathname)
 
     // 编辑器自身的静态资源
-    if (req.method === 'GET' && pathname === '/') return serveFile(res, join(uiDir, 'index.html'))
+    if (req.method === 'GET' && pathname === '/') return serveEditorPage(res)
     if (req.method === 'GET' && pathname === '/ui.js') return serveFile(res, join(distDir, 'ui.js'))
     if (req.method === 'GET' && pathname === '/ui.css') return serveFile(res, join(distDir, 'ui.css'))
+    // 图标与构建产物共用同一份（src/icon.svg，外加兜底的 src/icon.png），不另存
+    if (req.method === 'GET' && pathname === '/icon.svg') return serveFile(res, join(here, '..', 'icon.svg'))
+    if (req.method === 'GET' && pathname === '/icon.png') return serveFile(res, join(here, '..', 'icon.png'))
 
     // 原型与素材。编辑器一次只服务一个站点，所以路径里不带 site id：
     // 正文里写的是 assets/x.png（相对站点根），在编辑器页面上正好落到这里。

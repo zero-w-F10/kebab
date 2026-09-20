@@ -15,7 +15,7 @@ async function serve(t, { site = 'demo' } = {}) {
   const workspace = makeWorkspace(t)
   makeSite(workspace, site)
   // 前端产物不入 git，造一份假的，让静态路由也有得测
-  write(workspace, 'ui/index.html', '<!doctype html><div id="app"></div>')
+  write(workspace, 'ui/index.html', '<!doctype html><title>kebab 编辑器</title><div id="app"></div>')
   write(workspace, 'ui/dist/ui.js', 'export const a = 1\n')
   write(workspace, 'ui/dist/ui.css', '.a{}\n')
 
@@ -65,19 +65,27 @@ test('GET /api/state 给出站点清单、指纹与 doctor 结果', async (t) =>
 
 test('编辑器页面与前端资源由服务提供，其余路径 404', async (t) => {
   const api = await serve(t)
-  assert.equal((await api.fetch('/')).status, 200)
+  const page = await api.fetch('/')
+  assert.equal(page.status, 200)
+  assert.match(await page.text(), /<title>示例产品原型 - Kebab 编辑器<\/title>/, '标签页标题带站点名')
   assert.equal((await api.fetch('/ui.js')).status, 200)
   assert.equal((await api.fetch('/ui.css')).status, 200)
+  const icon = await api.fetch('/icon.svg')
+  assert.equal(icon.status, 200)
+  assert.match(icon.headers.get('content-type'), /image\/svg\+xml/)
+  const iconPng = await api.fetch('/icon.png')
+  assert.equal(iconPng.status, 200)
+  assert.match(iconPng.headers.get('content-type'), /image\/png/)
   assert.equal((await api.fetch('/没这个')).status, 404)
 })
 
-test('新建页面 → 分配编号 → 保存正文 → 指纹前进', async (t) => {
+test('新建页面 → 保存正文 → 指纹前进', async (t) => {
   const api = await serve(t)
   const state = (await api.get('/api/state')).body
 
   const created = await api.post('/api/page/create', { moduleId: 'login', pageId: 'fresh', type: 'doc', title: '新页', baseRevision: state.revision })
   assert.equal(created.status, 200)
-  assert.equal(created.body.site.modules[0].pages.at(-1).code, 'LO-03')
+  assert.equal(created.body.site.modules[0].pages.at(-1).id, 'fresh')
   assert.ok(existsSync(join(api.dir, 'pages', 'fresh.md')))
 
   const saved = await api.post('/api/doc/save', { id: 'fresh', text: '## 一\n', baseRevision: created.body.revision })
@@ -108,15 +116,15 @@ test('磁盘被外部改动后，旧指纹的保存被 409 拦下且不落盘', 
   assert.match(readFileSync(join(api.dir, 'pages', 'login-doc.md'), 'utf8'), /外部改的/)
 })
 
-test('清单里 code 撞车被 400 拦下', async (t) => {
+test('清单里 page id 撞车被 400 拦下', async (t) => {
   const api = await serve(t)
   const state = (await api.get('/api/state')).body
   const tree = structuredClone(state.site)
-  tree.modules[0].pages[1].code = 'LO-01'
+  tree.modules[0].pages[1].id = 'login-doc'
 
   const response = await api.post('/api/tree', { tree, baseRevision: state.revision })
   assert.equal(response.status, 400)
-  assert.match(response.body.error, /code 重复/)
+  assert.match(response.body.error, /id 重复/)
 })
 
 test('上传素材：二进制体、assets/ 路径、重名让路、旧指纹 409', async (t) => {
@@ -192,15 +200,15 @@ test('POST /api/build 与 npm run build 同路，产物能经 /build/ 预览', a
 test('构建失败的两种原因都如实报回来，force 才放行', async (t) => {
   const api = await serve(t)
 
-  // 一：清单与磁盘不一致
-  write(api.workspace, 'sites/demo/pages/extra.md', '## 孤儿\n')
+  // 一：清单声明的正文文件不见了
+  rmSync(join(api.dir, 'pages', 'login-doc.md'))
   const broken = await api.post('/api/build', {})
   assert.equal(broken.body.ok, false)
   assert.equal(broken.body.stage, 'doctor')
-  assert.ok(broken.body.problems.some((problem) => problem.kind === 'orphan'))
+  assert.ok(broken.body.problems.some((problem) => problem.kind === 'dangling'))
 
-  // 换成原型里的 module script
-  rmSync(join(api.dir, 'pages', 'extra.md'))
+  // 把正文补回去，换成原型里的 module script
+  write(api.workspace, 'sites/demo/pages/login-doc.md', '## 调整背景\n\n正文\n')
   write(api.workspace, 'sites/demo/prototypes/login-proto/index.html', '<script type="module" src="a.js"></script>')
 
   const blocked = await api.post('/api/build', {})

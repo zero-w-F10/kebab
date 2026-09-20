@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { mountEditor } from './dom.js'
+import { installDom, mountEditor } from './dom.js'
 
 /**
  * 编辑器不许改写人工写法。
@@ -64,4 +64,23 @@ test('再灌回去也不会漂移（保存两次与保存一次等价）', async
 
   handle.setMarkdown(first)
   assert.equal(handle.getMarkdown(), first)
+})
+
+test('序列化只差末尾空行时不算改动 —— 挂载后补报的那一次走的就是这里', async () => {
+  // 真实故障：Crepe 挂载完成后必定补报一次 markdownUpdated，那次带的是原始序列化结果，
+  // 比磁盘上那份多一个末尾空行。外面一律当成改动，于是「一打开页面就提示有未保存的改动」，
+  // 而实际保存写回去的字节完全一样。
+  //
+  // jsdom 里 Milkdown 不发这个事件（挂载、setMarkdown、等多久都不发），所以这里不绕弯，
+  // 直接测那个判断本身：收尾之后相等就不算改动。
+  installDom()
+  const { finishMarkdown, isRealChange } = await import('../src/editor/ui/doc-editor.js')
+
+  assert.equal(finishMarkdown(`${SAMPLE}\n\n\n`), SAMPLE, '末尾空行收成一个换行')
+  assert.equal(isRealChange(SAMPLE, `${SAMPLE}\n`), false, '只多一个末尾空行，不算改动')
+  assert.equal(isRealChange(SAMPLE, `${SAMPLE}\n\n`), false, '多两个也一样')
+  assert.equal(isRealChange(SAMPLE, SAMPLE), false, '逐字相同，不算改动')
+  assert.equal(isRealChange(SAMPLE, `${SAMPLE}新增一段。\n`), true, '真加了内容才算改动')
+  assert.equal(isRealChange(SAMPLE, SAMPLE.replace('调整背景', '改动背景')), true)
+  assert.equal(isRealChange('', finishMarkdown(undefined)), false, '空正文不算改动')
 })

@@ -21,11 +21,16 @@ export function listSites(workspace) {
     .sort((a, b) => a.id.localeCompare(b.id))
 }
 
-/** 把模块树摊平成页面列表，每项带着所属模块。 */
+/**
+ * 把模块树摊平成页面列表，每项带着所属模块。
+ * 页面可以再挂下级，所以按前序递归下来 —— 父级一定排在它的下级前面。
+ */
 export function flattenPages(site) {
-  return (site.modules ?? []).flatMap((mod) =>
-    (mod.pages ?? []).map((page) => ({ ...page, module: mod })),
-  )
+  const walk = (pages, module) => (pages ?? []).flatMap((page) => [
+    { ...page, module },
+    ...walk(page.children, module),
+  ])
+  return (site.modules ?? []).flatMap((mod) => walk(mod.pages, mod))
 }
 
 export const entryOf = (page) => page.entry ?? 'index.html'
@@ -45,19 +50,17 @@ export function doctor(dir, site) {
   const problems = []
   const pages = flattenPages(site)
 
-  const seen = { id: new Map(), code: new Map() }
+  // 页面只有 id 这一个身份：标题是给人看的，可以重复，也不参与寻址
+  const seen = new Map()
   for (const page of pages) {
-    for (const key of ['id', 'code']) {
-      const value = page[key]
-      const first = seen[key].get(value)
-      if (first) {
-        problems.push({
-          kind: 'duplicate',
-          message: `${key} 重复：${value}（${first.title} 与 ${page.title}）`,
-        })
-      } else {
-        seen[key].set(value, page)
-      }
+    const first = seen.get(page.id)
+    if (first) {
+      problems.push({
+        kind: 'duplicate',
+        message: `id 重复：${page.id}（${first.title} 与 ${page.title}）`,
+      })
+    } else {
+      seen.set(page.id, page)
     }
   }
 
@@ -67,13 +70,13 @@ export function doctor(dir, site) {
       if (!existsSync(entry)) {
         problems.push({
           kind: 'dangling',
-          message: `${page.code} ${page.title}：找不到原型入口 prototypes/${page.id}/${entryOf(page)}`,
+          message: `${page.title}（${page.id}）：找不到原型入口 prototypes/${page.id}/${entryOf(page)}`,
         })
       }
     } else if (!existsSync(contentPathOf(dir, page))) {
       problems.push({
         kind: 'dangling',
-        message: `${page.code} ${page.title}：找不到 pages/${page.id}.md`,
+        message: `${page.title}（${page.id}）：找不到 pages/${page.id}.md`,
       })
     }
   }
@@ -96,7 +99,69 @@ export function doctor(dir, site) {
     }
   }
 
+  // 素材：磁盘上躺着、但没有任何 doc 页引用它 —— 在编辑器里删掉图之后留下的那些
+  const assets = join(dir, 'assets')
+  if (existsSync(assets)) {
+    const used = referencedAssets(dir, pages)
+    for (const name of listAssets(assets)) {
+      if (used.has(name.toLowerCase())) continue
+      problems.push({
+        kind: 'unused-asset',
+        // path 给编辑器用：它要凭这个路径把文件删掉
+        path: `assets/${name}`,
+        message: `闲置素材：assets/${name} 没有被任何 doc 页引用`,
+      })
+    }
+  }
+
   return problems
+}
+
+/** 正文里对素材的引用一律按站点根写：`assets/<文件名>`，见 docs/design.md。 */
+const ASSET_REFERENCE = /assets\/([^\s)"'<>\\]+)/g
+
+/**
+ * doc 正文引用到的素材名，键转成小写 —— 大小写不敏感，宁可漏报「闲置」也不能误删。
+ * 文件名被 URL 编码过（中文名）的写法也算引用。
+ */
+export function referencedAssets(dir, pages) {
+  const used = new Set()
+  for (const page of pages) {
+    if (page.type !== 'doc') continue
+    const file = contentPathOf(dir, page)
+    if (!existsSync(file)) continue
+    for (const match of readFileSync(file, 'utf8').matchAll(ASSET_REFERENCE)) {
+      for (const name of spellings(match[1])) used.add(name.toLowerCase())
+    }
+  }
+  return used
+}
+
+/** 一个引用可能写成原名或编码形式，两种都收下。 */
+function spellings(raw) {
+  const bare = raw.replace(/[?#].*$/, '')
+  const names = [bare]
+  try {
+    names.push(decodeURIComponent(bare))
+  } catch {
+    /* 不是合法的百分号编码，按原样算 */
+  }
+  return names
+}
+
+/** assets/ 下的文件名（相对 assets/，含子目录），排序后返回，让 doctor 的输出稳定。 */
+function listAssets(base) {
+  const names = []
+  const walk = (abs, prefix) => {
+    for (const entry of readdirSync(abs, { withFileTypes: true })) {
+      if (entry.name.startsWith('.')) continue
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name
+      if (entry.isDirectory()) walk(join(abs, entry.name), rel)
+      else names.push(rel)
+    }
+  }
+  walk(base, '')
+  return names.sort()
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href

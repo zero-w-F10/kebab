@@ -1,0 +1,20 @@
+<!--
+  kebab 图标：以 K 为基础，笔画换成一串烤肉。
+  竖笔与两条斜臂是三根签子（圆头细杆），两块肉串在两条斜臂靠外的位置 ——
+  肉块刻意做小、往外挪，斜臂中段只留细签，缩到 16px 也还看得出是个 K。
+  方底用编辑器的主色。构建时以 kebab.svg 复制进 dist/ 与根门户页，见 src/build.js。
+  另有一份位图兜底 src/icon.png（Chromium 不一定肯拿 SVG 当 favicon），
+  由 tools/render-icon-png.ps1 按同一套几何光栅化而来 —— 改图形要两边一起改。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" aria-label="kebab">
+  <rect width="32" height="32" rx="7" fill="#2b6cff"/>
+  <g fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round">
+    <path d="M8.5 7.5V24.5"/>
+    <path d="M8.5 16 23.5 7"/>
+    <path d="M8.5 16 23.5 25"/>
+  </g>
+  <g fill="#fff">
+    <rect x="17" y="5.78" width="6.4" height="6.4" rx="1.6" transform="rotate(-31 20.2 8.98)"/>
+    <rect x="17" y="19.82" width="6.4" height="6.4" rx="1.6" transform="rotate(31 20.2 23.02)"/>
+  </g>
+</svg>

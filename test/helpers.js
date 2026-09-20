@@ -34,10 +34,9 @@ export function makeSite(workspace, id = 'demo', patch = (site) => site) {
       {
         id: 'login',
         title: '登录与注册',
-        prefix: 'LO',
         pages: [
-          { id: 'login-doc', code: 'LO-01', type: 'doc', title: '登录页改版说明' },
-          { id: 'login-proto', code: 'LO-02', type: 'proto', title: '新版登录页原型' },
+          { id: 'login-doc', type: 'doc', title: '登录页改版说明' },
+          { id: 'login-proto', type: 'proto', title: '新版登录页原型' },
         ],
       },
     ],

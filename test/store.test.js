@@ -6,23 +6,6 @@ import { test } from 'node:test'
 import * as store from '../src/editor/store.js'
 import { makeSite, makeWorkspace, tinyPng, tinyPngBase64, write } from './helpers.js'
 
-/* ---------- 编号分配 ---------- */
-
-test('nextCode 取模块内最大流水 +1', () => {
-  assert.equal(store.nextCode({ prefix: 'LO', pages: [{ code: 'LO-01' }, { code: 'LO-07' }, { code: 'LO-03' }] }), 'LO-08')
-})
-
-test('nextCode：删掉中间号不让后面的补位，删掉末尾号会拿回它', () => {
-  // LO-02 已被删，剩下的号不动
-  assert.equal(store.nextCode({ prefix: 'LO', pages: [{ code: 'LO-01' }, { code: 'LO-03' }] }), 'LO-04')
-  // LO-04 是本模块末尾那个号，删掉之后新页会拿回它
-  assert.equal(store.nextCode({ prefix: 'LO', pages: [{ code: 'LO-01' }, { code: 'LO-02' }, { code: 'LO-03' }] }), 'LO-04')
-})
-
-test('nextCode 不认别的模块的号', () => {
-  assert.equal(store.nextCode({ prefix: 'OR', pages: [{ code: 'LO-09' }] }), 'OR-01')
-})
-
 /* ---------- 指纹与陈旧写入 ---------- */
 
 test('指纹只看内容，不看时间戳', (t) => {
@@ -74,17 +57,17 @@ test('陈旧指纹的写入一律拒绝', (t) => {
 
 /* ---------- 页面与模块 ---------- */
 
-test('createPage 给 doc 页落空文件、给 proto 页建目录，并分配下一个号', (t) => {
+test('createPage 给 doc 页落空文件、给 proto 页建目录', (t) => {
   const workspace = makeWorkspace(t)
   const { id, dir } = makeSite(workspace)
   const revision = store.hashTree(dir)
 
   const after = store.createPage(workspace, id, { moduleId: 'login', pageId: 'login-doc-2', type: 'doc', title: '第二篇' }, revision)
-  assert.equal(after.site.modules[0].pages.at(-1).code, 'LO-03')
+  assert.equal(after.site.modules[0].pages.at(-1).id, 'login-doc-2')
   assert.equal(readFileSync(join(dir, 'pages', 'login-doc-2.md'), 'utf8'), '')
 
   const proto = store.createPage(workspace, id, { moduleId: 'login', pageId: 'login-proto-2', type: 'proto', title: '第二版原型' }, after.revision)
-  assert.equal(proto.site.modules[0].pages.at(-1).code, 'LO-04')
+  assert.equal(proto.site.modules[0].pages.at(-1).id, 'login-proto-2')
   assert.ok(existsSync(join(dir, 'prototypes', 'login-proto-2')))
   // 入口还没放进去，doctor 如实报出来
   assert.equal(proto.problems.filter((problem) => problem.kind === 'dangling').length, 1)
@@ -115,32 +98,136 @@ test('deletePage 的 withFiles 决定要不要动磁盘', (t) => {
   assert.equal(gone.problems.length, 1, '剩下的孤儿文件仍如实报出')
 })
 
-test('createModule 把前缀转成大写，id 与前缀都要合规', (t) => {
+test('createModule 只认 id 与标题，id 要合规、不能撞车', (t) => {
   const workspace = makeWorkspace(t)
   const { id, dir } = makeSite(workspace)
 
-  const after = store.createModule(workspace, id, { moduleId: 'order', title: '订单', prefix: 'or' }, store.hashTree(dir))
-  assert.equal(after.site.modules[1].prefix, 'OR')
+  const after = store.createModule(workspace, id, { moduleId: 'order', title: '订单' }, store.hashTree(dir))
+  assert.equal(after.site.modules[1].title, '订单')
   assert.deepEqual(after.site.modules[1].pages, [])
 
-  assert.throws(() => store.createModule(workspace, id, { moduleId: 'order', title: 'x', prefix: 'OR' }, after.revision), store.BadRequest)
-  assert.throws(() => store.createModule(workspace, id, { moduleId: 'Bad', title: 'x', prefix: 'OR' }, after.revision), store.BadRequest)
-  assert.throws(() => store.createModule(workspace, id, { moduleId: 'fresh', title: 'x', prefix: '  ' }, after.revision), store.BadRequest)
+  assert.throws(() => store.createModule(workspace, id, { moduleId: 'order', title: 'x' }, after.revision), store.BadRequest)
+  assert.throws(() => store.createModule(workspace, id, { moduleId: 'Bad', title: 'x' }, after.revision), store.BadRequest)
 })
 
-test('saveTree 拦住重复的 page id 与 code，并保持字段顺序', (t) => {
+test('saveTree 拦住重复的 page id，并保持字段顺序', (t) => {
   const workspace = makeWorkspace(t)
   const { id, dir, site } = makeSite(workspace)
 
   const duplicate = structuredClone(site)
-  duplicate.modules[0].pages[1].code = 'LO-01'
+  duplicate.modules[0].pages[1].id = 'login-doc'
   assert.throws(() => store.saveTree(workspace, id, duplicate, store.hashTree(dir)), store.BadRequest)
 
   const shuffled = structuredClone(site)
-  shuffled.modules[0].pages[0] = { title: '标题被挪到前面', type: 'doc', code: 'LO-01', id: 'login-doc' }
+  shuffled.modules[0].pages[0] = { title: '标题被挪到前面', type: 'doc', id: 'login-doc' }
   store.saveTree(workspace, id, shuffled, store.hashTree(dir))
   const onDisk = JSON.parse(readFileSync(join(dir, 'site.json'), 'utf8'))
-  assert.deepEqual(Object.keys(onDisk.modules[0].pages[0]), ['id', 'code', 'type', 'title'])
+  assert.deepEqual(Object.keys(onDisk.modules[0].pages[0]), ['id', 'type', 'title'])
+})
+
+/* ---------- 页面嵌套 ---------- */
+
+/** 给 demo 的第一页挂个下级。 */
+const nest = (site) => {
+  site.modules[0].pages[0].children = [{ id: 'login-doc-a1', type: 'doc', title: 'A 的补充说明' }]
+  return site
+}
+
+test('createPage 带 parentId 时挂成下级，正文照样落在 pages/ 根下', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id, dir } = makeSite(workspace)
+  const revision = store.hashTree(dir)
+
+  const after = store.createPage(workspace, id,
+    { moduleId: 'login', pageId: 'login-doc-a1', type: 'doc', title: '补充说明', parentId: 'login-doc' },
+    revision)
+  const parent = after.site.modules[0].pages[0]
+  assert.deepEqual(parent.children.map((child) => child.id), ['login-doc-a1'])
+  // 正文位置由 id 推出，跟层级无关
+  assert.ok(existsSync(join(dir, 'pages', 'login-doc-a1.md')))
+  assert.equal(after.site.modules[0].pages.length, 2, '没有多出一个顶层页面')
+})
+
+test('createPage 拒绝不存在的上级与跨模块的上级', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id, dir } = makeSite(workspace)
+  const revision = store.hashTree(dir)
+
+  assert.throws(() => store.createPage(workspace, id,
+    { moduleId: 'login', pageId: 'x', type: 'doc', title: 'x', parentId: '没有这页' }, revision),
+  /没有这个上级 page/)
+
+  store.createModule(workspace, id, { moduleId: 'order', title: '订单' }, revision)
+  const next = store.hashTree(dir)
+  assert.throws(() => store.createPage(workspace, id,
+    { moduleId: 'order', pageId: 'y', type: 'doc', title: 'y', parentId: 'login-doc' }, next),
+  /不在模块 order 里/)
+})
+
+test('children 递归写回，空的下级不落盘', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id, dir, site } = makeSite(workspace)
+
+  const nested = nest(structuredClone(site))
+  nested.modules[0].pages[1].children = []
+  store.saveTree(workspace, id, nested, store.hashTree(dir))
+
+  const onDisk = JSON.parse(readFileSync(join(dir, 'site.json'), 'utf8'))
+  assert.deepEqual(Object.keys(onDisk.modules[0].pages[0]), ['id', 'type', 'title', 'children'])
+  assert.deepEqual(onDisk.modules[0].pages[0].children.map((child) => child.id), ['login-doc-a1'])
+  assert.equal('children' in onDisk.modules[0].pages[1], false, '空的 children 不写进文件')
+  assert.equal('children' in onDisk.modules[0].pages[0].children[0], false, '叶子也一样')
+})
+
+test('deletePage 连带删掉整棵子树，withFiles 决定动不动磁盘', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id, dir, site } = makeSite(workspace)
+  const nested = nest(structuredClone(site))
+  nested.modules[0].pages[0].children[0].children = [{ id: 'login-doc-a1-1', type: 'doc', title: '再往下' }]
+  store.saveTree(workspace, id, nested, store.hashTree(dir))
+  write(workspace, `sites/${id}/pages/login-doc-a1.md`, '## 一\n')
+  write(workspace, `sites/${id}/pages/login-doc-a1-1.md`, '## 二\n')
+
+  const kept = store.deletePage(workspace, id, 'login-doc', { withFiles: false }, store.hashTree(dir))
+  assert.deepEqual(kept.site.modules[0].pages.map((page) => page.id), ['login-proto'], '整棵子树从清单里摘掉')
+  assert.ok(existsSync(join(dir, 'pages', 'login-doc.md')), '不勾选时文件留着')
+  assert.ok(existsSync(join(dir, 'pages', 'login-doc-a1-1.md')))
+  // 留下来的三个正文都成了孤儿文件，可以从核对面板导回来
+  assert.equal(kept.problems.filter((problem) => problem.kind === 'orphan').length, 3)
+
+  const gone = store.deletePage(workspace, id, 'login-proto', { withFiles: true }, kept.revision)
+  assert.ok(!existsSync(join(dir, 'prototypes', 'login-proto')))
+  assert.equal(gone.problems.filter((problem) => problem.kind === 'orphan').length, 3)
+})
+
+test('deleteModule 的 withFiles 连下级一起清', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id, dir, site } = makeSite(workspace)
+  const nested = nest(structuredClone(site))
+  store.saveTree(workspace, id, nested, store.hashTree(dir))
+  write(workspace, `sites/${id}/pages/login-doc-a1.md`, '## 一\n')
+
+  store.deleteModule(workspace, id, 'login', { withFiles: true }, store.hashTree(dir))
+  assert.ok(!existsSync(join(dir, 'pages', 'login-doc.md')))
+  assert.ok(!existsSync(join(dir, 'pages', 'login-doc-a1.md')), '下级也被清掉')
+})
+
+test('保存时把退役的 code 与 prefix 从清单里剔掉', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id, dir, site } = makeSite(workspace)
+
+  // 旧站点的清单里还留着这两个字段，保存一次就该干净
+  const legacy = structuredClone(site)
+  legacy.modules[0].prefix = 'LO'
+  legacy.modules[0].pages[0].code = 'LO-01'
+  legacy.modules[0].pages[1].code = 'LO-02'
+
+  store.saveTree(workspace, id, legacy, store.hashTree(dir))
+  const onDisk = JSON.parse(readFileSync(join(dir, 'site.json'), 'utf8'))
+  assert.equal('prefix' in onDisk.modules[0], false)
+  assert.equal('code' in onDisk.modules[0].pages[0], false)
+  assert.equal('code' in onDisk.modules[0].pages[1], false)
+  assert.deepEqual(Object.keys(onDisk.modules[0]), ['id', 'title', 'pages'])
 })
 
 /* ---------- orphan 的两个出口 ---------- */
@@ -154,7 +241,6 @@ test('importOrphan 只改清单，磁盘上的文件原地不动', (t) => {
   const page = after.site.modules[0].pages.at(-1)
   assert.equal(page.id, 'unfiled')
   assert.equal(page.type, 'doc')
-  assert.equal(page.code, 'LO-03')
   assert.equal(readFileSync(join(dir, 'pages', 'unfiled.md'), 'utf8'), '## 孤儿\n\n正文\n')
   assert.equal(after.problems.filter((problem) => problem.kind === 'orphan').length, 0)
 })
@@ -181,7 +267,7 @@ test('deleteOrphan 删掉磁盘上的文件，但只认 pages/ 与 prototypes/',
   assert.throws(() => store.deleteOrphan(workspace, id, 'assets/pic.png', store.hashTree(dir)), store.BadRequest)
   const after = store.deleteOrphan(workspace, id, 'prototypes/leftover', store.hashTree(dir))
   assert.ok(!existsSync(join(dir, 'prototypes', 'leftover')))
-  assert.equal(after.problems.length, 0)
+  assert.equal(after.problems.filter((problem) => problem.kind === 'orphan').length, 0)
 })
 
 /* ---------- 素材与正文 ---------- */
@@ -240,7 +326,61 @@ test('saveDoc 对普通正文不动一个字节，也不报搬运', (t) => {
   const text = '## 标题\n\n![图](assets/pic.png)\n\n正文\n'
   const after = store.saveDoc(workspace, id, 'login-doc', text, store.hashTree(dir))
   assert.equal(after.rescued, 0)
+  assert.equal(after.stripped, 0)
   assert.equal(readFileSync(join(dir, 'pages', 'login-doc.md'), 'utf8'), text)
+})
+
+test('saveDoc 抹掉空段落留下的孤立 <br />', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id, dir } = makeSite(workspace)
+  // 编辑器里图片上方留过一个空段落，Crepe 就是这么写下来的
+  const text = '## 三、批量订单如何识别\n\n<br />\n\n![image.png](assets/image.png)\n'
+
+  const after = store.saveDoc(workspace, id, 'login-doc', text, store.hashTree(dir))
+  assert.equal(after.stripped, 1)
+  assert.equal(
+    readFileSync(join(dir, 'pages', 'login-doc.md'), 'utf8'),
+    '## 三、批量订单如何识别\n\n\n![image.png](assets/image.png)\n',
+  )
+})
+
+test('saveDoc 只清孤立成行的 br，行内的不碰', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id, dir } = makeSite(workspace)
+  const text = '## 标题\n\n第一行<br />第二行\n\n<br>\n'
+
+  const after = store.saveDoc(workspace, id, 'login-doc', text, store.hashTree(dir))
+  assert.equal(after.stripped, 1, '只有孤立的 <br> 算一处')
+  assert.equal(
+    readFileSync(join(dir, 'pages', 'login-doc.md'), 'utf8'),
+    '## 标题\n\n第一行<br />第二行\n\n',
+  )
+})
+
+test('deleteUnusedAsset 删掉没被正文引用的素材', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id, dir } = makeSite(workspace)
+  write(workspace, `sites/${id}/assets/used.png`, 'x')
+  write(workspace, `sites/${id}/assets/left.png`, 'x')
+  write(workspace, `sites/${id}/pages/login-doc.md`, '## 一\n\n![图](assets/used.png)\n')
+
+  store.deleteUnusedAsset(workspace, id, 'assets/left.png', store.hashTree(dir))
+  assert.ok(!existsSync(join(dir, 'assets', 'left.png')))
+  assert.ok(existsSync(join(dir, 'assets', 'used.png')), '还被引用的那张留着')
+})
+
+test('deleteUnusedAsset 拒绝仍被引用的、非 assets 的与越界的路径', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id, dir } = makeSite(workspace)
+  write(workspace, `sites/${id}/assets/used.png`, 'x')
+  write(workspace, `sites/${id}/pages/login-doc.md`, '## 一\n\n![图](assets/used.png)\n')
+
+  const revision = () => store.hashTree(dir)
+  assert.throws(() => store.deleteUnusedAsset(workspace, id, 'assets/used.png', revision()), /还被正文引用着/)
+  assert.throws(() => store.deleteUnusedAsset(workspace, id, 'pages/login-doc.md', revision()), /不是 assets\//)
+  assert.throws(() => store.deleteUnusedAsset(workspace, id, 'assets/../site.json', revision()), /不是 assets\//)
+  assert.throws(() => store.deleteUnusedAsset(workspace, id, 'assets/missing.png', revision()), /磁盘上没有这个素材/)
+  assert.ok(existsSync(join(dir, 'assets', 'used.png')))
 })
 
 test('readDoc 只接受 doc 页，且对缺失文件返回 null', (t) => {

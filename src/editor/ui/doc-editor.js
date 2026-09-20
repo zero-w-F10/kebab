@@ -39,6 +39,23 @@ const featureConfigs = (onUpload) => ({
   [Crepe.Feature.Placeholder]: { text: '正文从 ## 开始写，标题层级会自动变成条目编号' },
 })
 
+/**
+ * 序列化收尾：末尾统一成一个换行（序列化本身会多留空行）。
+ *
+ * 收尾必须同时用在两个出口上：getMarkdown() 是落盘要写的字节，onChange 是让外面判断
+ * 「有没有改动」的依据。只收前者的话，Crepe 挂载完成后补报的那一次 markdownUpdated
+ * 会带着末尾空行送出去，跟刚读进来的正文对不上。
+ */
+export const finishMarkdown = (text) => (text ?? '').replace(/\n+$/, '\n')
+
+/**
+ * 这次回调算不算真的改动：把序列化结果按落盘格式收尾，再跟手里那份逐字比。
+ *
+ * Crepe 挂载完成后必定补报一次 markdownUpdated，那次的结果与刚读进来的正文只差末尾空行；
+ * 不比较就会把「一打开页面」当成「有未保存的改动」，而保存写回去的字节其实一模一样。
+ */
+export const isRealChange = (current, next) => finishMarkdown(next) !== current
+
 export async function mountDocEditor({ root, markdown, onUpload, onChange }) {
   const build = async (wirePasteUpload) => {
     const crepe = new Crepe({
@@ -48,7 +65,7 @@ export async function mountDocEditor({ root, markdown, onUpload, onChange }) {
       featureConfigs: featureConfigs(onUpload),
     })
     tuneSerialization(crepe)
-    crepe.on((listener) => listener.markdownUpdated((_ctx, next) => onChange(next)))
+    crepe.on((listener) => listener.markdownUpdated((_ctx, next) => onChange(finishMarkdown(next))))
     if (wirePasteUpload) wirePasteUploader(crepe, onUpload)
     await crepe.create()
     return crepe
@@ -66,8 +83,7 @@ export async function mountDocEditor({ root, markdown, onUpload, onChange }) {
   }
 
   return {
-    // 序列化会在末尾多留一个空行，统一成「文件以一个换行结尾」
-    getMarkdown: () => crepe.getMarkdown().replace(/\n+$/, '\n'),
+    getMarkdown: () => finishMarkdown(crepe.getMarkdown()),
     setMarkdown: (next) => crepe.editor.action(replaceAll(next ?? '', true)),
     destroy: () => crepe.destroy(),
   }

@@ -1,4 +1,4 @@
-import { entryOf } from './doctor.js'
+import { entryOf, flattenPages } from './doctor.js'
 
 const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
 
@@ -8,19 +8,22 @@ export const hrefOf = (page) => `${page.id}.html`
 
 /**
  * 导航树。构建时烘焙进每个 HTML —— 产物不带任何运行时 JS，见 docs/adr/0001。
+ * page 可以再挂下级，所以这里递归下来，下级套一层 <ul> 靠 CSS 缩进。
  */
 export function renderNav(site, currentId) {
+  const pageItem = (page) => {
+    const marker = page.id === currentId ? ' class="is-current" aria-current="page"' : ''
+    const children = page.children ?? []
+    const nested = children.length > 0
+      ? `\n          <ul class="kebab-sub">\n            ${children.map(pageItem).join('\n            ')}\n          </ul>`
+      : ''
+    return `<li><a href="${hrefOf(page)}"${marker}>`
+      + `<span class="kebab-title">${esc(page.title)}</span></a>${nested}</li>`
+  }
+
   const modules = (site.modules ?? [])
     .map((mod) => {
-      const links = (mod.pages ?? [])
-        .map((page) => {
-          const current = page.id === currentId
-          const marker = current ? ' class="is-current" aria-current="page"' : ''
-          return `<li><a href="${hrefOf(page)}"${marker}>`
-            + `<span class="kebab-code">${esc(page.code)}</span>`
-            + `<span class="kebab-title">${esc(page.title)}</span></a></li>`
-        })
-        .join('\n        ')
+      const links = (mod.pages ?? []).map(pageItem).join('\n        ')
       return `<li class="kebab-module">
       <div class="kebab-module-title">${esc(mod.title)}</div>
       <ul>
@@ -52,6 +55,8 @@ export function renderShell(site, page, body) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(page.title)} — ${esc(site.site?.title ?? '')}</title>
 <link rel="stylesheet" href="kebab.css">
+<link rel="icon" type="image/png" sizes="32x32" href="kebab.png">
+<link rel="icon" type="image/svg+xml" href="kebab.svg" sizes="any">
 </head>
 <body>
 <div class="kebab-shell">
@@ -68,7 +73,6 @@ ${body}
 export function renderDocBody(page, html) {
   return `<article class="kebab-doc">
   <header class="kebab-page-head">
-    <span class="kebab-code">${esc(page.code)}</span>
     <h1>${esc(page.title)}</h1>
   </header>
   <div class="kebab-prose">
@@ -81,7 +85,6 @@ export function renderProtoBody(page) {
   const src = `prototypes/${page.id}/${entryOf(page)}`
   return `<div class="kebab-proto">
   <div class="kebab-proto-bar">
-    <span class="kebab-code">${esc(page.code)}</span>
     <span class="kebab-proto-title">${esc(page.title)}</span>
     <a class="kebab-proto-full" href="${esc(src)}" target="_blank" rel="noopener">全屏打开</a>
   </div>
@@ -89,22 +92,26 @@ export function renderProtoBody(page) {
 </div>`
 }
 
-/** 单个产品原型的概览页：站点标题加模块列表。 */
+/** 单个产品原型的概览页：站点标题加模块列表。下级同样递归下去。 */
 export function renderOverview(site) {
+  const pageItem = (page) => {
+    const children = page.children ?? []
+    const nested = children.length > 0
+      ? `\n          <ul class="kebab-sub">\n            ${children.map(pageItem).join('\n            ')}\n          </ul>`
+      : ''
+    return `<li><a href="${hrefOf(page)}">${esc(page.title)}</a>${nested}</li>`
+  }
+
   const modules = (site.modules ?? [])
     .map((mod) => `<section class="kebab-overview-module">
     <h2>${esc(mod.title)}</h2>
     <ul>
-      ${(mod.pages ?? [])
-        .map((page) => `<li><a href="${hrefOf(page)}">`
-          + `<span class="kebab-code">${esc(page.code)}</span> ${esc(page.title)}`
-          + `</a></li>`)
-        .join('\n      ')}
+      ${(mod.pages ?? []).map(pageItem).join('\n      ')}
     </ul>
   </section>`)
     .join('\n  ')
 
-  const total = (site.modules ?? []).reduce((sum, mod) => sum + (mod.pages ?? []).length, 0)
+  const total = flattenPages(site).length
 
   return `<article class="kebab-doc kebab-overview">
   <header class="kebab-page-head">
@@ -120,7 +127,7 @@ export function renderPortalPage(entries) {
   const items = entries
     .map(({ id, site, built }) => {
       const modules = site.modules ?? []
-      const pages = modules.reduce((sum, mod) => sum + (mod.pages ?? []).length, 0)
+      const pages = flattenPages(site).length
       const title = site.site?.title ?? id
       const href = `../sites/${id}/dist/index.html`
       const meta = [
@@ -154,6 +161,8 @@ export function renderPortalPage(entries) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>产品原型</title>
 <link rel="stylesheet" href="kebab.css">
+<link rel="icon" type="image/png" sizes="32x32" href="kebab.png">
+<link rel="icon" type="image/svg+xml" href="kebab.svg" sizes="any">
 </head>
 <body>
 <main class="kebab-portal">

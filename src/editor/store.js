@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { basename, dirname, extname, join, relative } from 'node:path'
 
-import { contentPathOf, doctor, flattenPages, listSites, loadSite } from '../doctor.js'
+import { contentPathOf, doctor, flattenPages, listSites, loadSite, referencedAssets } from '../doctor.js'
 
 /**
  * 编辑器的数据层：site.json 与磁盘之间的读写，以及陈旧写入的判定。
@@ -91,7 +91,21 @@ const rest = (object, known) => Object.fromEntries(
   Object.entries(object).filter(([key]) => !known.includes(key)),
 )
 
-/** 按固定字段顺序写回，让 SVN diff 只显示真正改动的那几行。 */
+/**
+ * 按固定字段顺序写回，让 SVN diff 只显示真正改动的那几行。
+ * `code` 与 `prefix` 是已经退役的字段（见 docs/adr/0010）：它们不在这份白名单里，
+ * 所以旧站点只要在编辑器里保存一次，残留的字段就被顺手剔掉了。
+ * page 可以再挂下级，`children` 递归下去；空的下级不写进文件，叶子保持干净。
+ */
+const normalizePage = (page) => ({
+  id: page.id,
+  type: page.type,
+  title: page.title,
+  ...(page.entry ? { entry: page.entry } : {}),
+  ...rest(page, ['id', 'code', 'type', 'title', 'entry', 'children']),
+  ...((page.children ?? []).length > 0 ? { children: page.children.map(normalizePage) } : {}),
+})
+
 function normalizeSite(site) {
   const head = site.site ?? {}
   return {
@@ -103,16 +117,8 @@ function normalizeSite(site) {
     modules: (site.modules ?? []).map((mod) => ({
       id: mod.id,
       title: mod.title,
-      prefix: mod.prefix,
-      ...rest(mod, ['id', 'title', 'prefix', 'pages']),
-      pages: (mod.pages ?? []).map((page) => ({
-        id: page.id,
-        code: page.code,
-        type: page.type,
-        title: page.title,
-        ...(page.entry ? { entry: page.entry } : {}),
-        ...rest(page, ['id', 'code', 'type', 'title', 'entry']),
-      })),
+      ...rest(mod, ['id', 'title', 'prefix', 'pages', 'code']),
+      pages: (mod.pages ?? []).map(normalizePage),
     })),
   }
 }
@@ -121,43 +127,66 @@ function writeSite(dir, site) {
   writeFileSync(join(dir, SITE_FILE), `${JSON.stringify(normalizeSite(site), null, 2)}\n`, 'utf8')
 }
 
-/** 保存前的硬校验：id 与 code 不能撞车，形状要合法。软问题（dangling、orphan）交给 doctor 提示。 */
+/** 保存前的硬校验：id 不能撞车，形状要合法。软问题（dangling、orphan）交给 doctor 提示。 */
 export function validateSite(site) {
   const problems = []
   const ids = new Map()
-  const codes = new Map()
   const modules = new Map()
+
+  const walk = (pages) => {
+    for (const page of pages) {
+      if (!page.id || !ID_PATTERN.test(page.id)) problems.push(`page id 不合规：${page.id ?? '(空)'}`)
+      if (!page.title) problems.push(`page ${page.id} 缺标题`)
+      if (page.type !== 'doc' && page.type !== 'proto') problems.push(`page ${page.id} 的 type 只能是 doc 或 proto`)
+      if (ids.has(page.id)) problems.push(`page id 重复：${page.id}`)
+      ids.set(page.id, page)
+      // 同一棵子树里不可能自己套自己（JSON 里没有引用），但手工写坏的 children 要拦住
+      if (page.children !== undefined && !Array.isArray(page.children)) {
+        problems.push(`page ${page.id} 的 children 必须是数组`)
+        continue
+      }
+      walk(page.children ?? [])
+    }
+  }
 
   for (const mod of site.modules ?? []) {
     if (!mod.id || !ID_PATTERN.test(mod.id)) problems.push(`module id 不合规：${mod.id ?? '(空)'}`)
     if (modules.has(mod.id)) problems.push(`module id 重复：${mod.id}`)
     modules.set(mod.id, mod)
     if (!mod.title) problems.push(`module ${mod.id} 缺标题`)
-
-    for (const page of mod.pages ?? []) {
-      if (!page.id || !ID_PATTERN.test(page.id)) problems.push(`page id 不合规：${page.id ?? '(空)'}`)
-      if (!page.title) problems.push(`page ${page.id} 缺标题`)
-      if (page.type !== 'doc' && page.type !== 'proto') problems.push(`page ${page.id} 的 type 只能是 doc 或 proto`)
-      if (ids.has(page.id)) problems.push(`page id 重复：${page.id}`)
-      if (codes.has(page.code)) problems.push(`page code 重复：${page.code}`)
-      ids.set(page.id, page)
-      codes.set(page.code, page)
-    }
+    walk(mod.pages ?? [])
   }
 
   return problems
 }
 
-/** 分配 page code：module 内最大流水 +1。删页不复用号，重排序不改号，见 docs/adr/0005。 */
-export function nextCode(mod) {
-  const prefix = (mod.prefix ?? '').trim() || 'P'
-  const pattern = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-(\\d+)$`)
-  let max = 0
-  for (const page of mod.pages ?? []) {
-    const found = pattern.exec(page.code ?? '')
-    if (found) max = Math.max(max, Number(found[1]))
+/**
+ * 一页连同它的全部下级，前序。
+ * 删除、连带删磁盘文件、以及编辑器的确认框都要数这棵子树。
+ */
+export function subtreePages(page) {
+  return [page, ...(page.children ?? []).flatMap(subtreePages)]
+}
+
+/**
+ * 在整棵树里找一页，连同它所在的那个数组、所属 module、上级与深度。
+ * 删除与搬家都要从这里摘，所以不能只返回 page 本身。
+ */
+export function locatePageIn(site, pageId) {
+  const walk = (list, module, parent, depth) => {
+    for (let index = 0; index < list.length; index += 1) {
+      const page = list[index]
+      if (page.id === pageId) return { page, list, index, module, parent, depth }
+      const deeper = walk(page.children ?? [], module, page, depth + 1)
+      if (deeper) return deeper
+    }
+    return null
   }
-  return `${prefix}-${String(max + 1).padStart(2, '0')}`
+  for (const mod of site.modules ?? []) {
+    const found = walk(mod.pages ?? [], mod, null, 1)
+    if (found) return found
+  }
+  return null
 }
 
 function assertWrite(dir, baseRevision) {
@@ -186,7 +215,7 @@ function removeContent(dir, page) {
   else unlinkSync(target)
 }
 
-export function createPage(workspace, id, { moduleId, pageId, type, title }, baseRevision) {
+export function createPage(workspace, id, { moduleId, pageId, type, title, parentId }, baseRevision) {
   const dir = resolveSite(workspace, id)
   assertWrite(dir, baseRevision)
   const site = loadSite(dir)
@@ -201,7 +230,14 @@ export function createPage(workspace, id, { moduleId, pageId, type, title }, bas
   if (!mod) throw new BadRequest(`没有这个 module：${moduleId}`)
   if (type !== 'doc' && type !== 'proto') throw new BadRequest('type 只能是 doc 或 proto')
 
-  const page = { id: pageId, code: nextCode(mod), type, title: title?.trim() || pageId }
+  // 给了 parentId 就是给某一页当下级。正文位置由 id 推出、与层级无关，所以只是清单里挂在哪儿的差别
+  const parent = parentId ? locatePageIn(site, parentId) : null
+  if (parentId && !parent) throw new BadRequest(`没有这个上级 page：${parentId}`)
+  if (parent && parent.module.id !== moduleId) {
+    throw new BadRequest(`上级 page ${parentId} 不在模块 ${moduleId} 里`)
+  }
+
+  const page = { id: pageId, type, title: title?.trim() || pageId }
   if (type === 'doc') {
     const file = join(dir, 'pages', `${pageId}.md`)
     if (!existsSync(file)) {
@@ -214,26 +250,30 @@ export function createPage(workspace, id, { moduleId, pageId, type, title }, bas
     mkdirSync(join(dir, 'prototypes', pageId), { recursive: true })
   }
 
-  mod.pages = [...(mod.pages ?? []), page]
+  if (parent) parent.page.children = [...(parent.page.children ?? []), page]
+  else mod.pages = [...(mod.pages ?? []), page]
   writeSite(dir, site)
   return stateOf(workspace, id)
 }
 
+/** 删一页连带它的整棵子树 —— 留着下级会变成没有父级的悬空节点。 */
 export function deletePage(workspace, id, pageId, { withFiles }, baseRevision) {
   const dir = resolveSite(workspace, id)
   assertWrite(dir, baseRevision)
   const site = loadSite(dir)
 
-  const page = flattenPages(site).find((entry) => entry.id === pageId)
-  if (!page) throw new BadRequest(`清单里没有这个 page：${pageId}`)
-  const mod = (site.modules ?? []).find((entry) => entry.id === page.module.id)
-  mod.pages = mod.pages.filter((entry) => entry.id !== pageId)
+  const found = locatePageIn(site, pageId)
+  if (!found) throw new BadRequest(`清单里没有这个 page：${pageId}`)
+  const removed = subtreePages(found.page)
+  found.list.splice(found.index, 1)
   writeSite(dir, site)
-  if (withFiles) removeContent(dir, page)
+  if (withFiles) {
+    for (const page of removed) removeContent(dir, page)
+  }
   return stateOf(workspace, id)
 }
 
-export function createModule(workspace, id, { moduleId, title, prefix }, baseRevision) {
+export function createModule(workspace, id, { moduleId, title }, baseRevision) {
   const dir = resolveSite(workspace, id)
   assertWrite(dir, baseRevision)
   const site = loadSite(dir)
@@ -244,12 +284,10 @@ export function createModule(workspace, id, { moduleId, title, prefix }, baseRev
   if ((site.modules ?? []).some((mod) => mod.id === moduleId)) {
     throw new BadRequest(`module id 已被占用：${moduleId}`)
   }
-  if (!(prefix ?? '').trim()) throw new BadRequest('module 需要一个 code 前缀，例如 LO')
 
   site.modules = [...(site.modules ?? []), {
     id: moduleId,
     title: title?.trim() || moduleId,
-    prefix: prefix.trim().toUpperCase(),
     pages: [],
   }]
   writeSite(dir, site)
@@ -266,7 +304,8 @@ export function deleteModule(workspace, id, moduleId, { withFiles }, baseRevisio
   site.modules = site.modules.filter((entry) => entry.id !== moduleId)
   writeSite(dir, site)
   if (withFiles) {
-    for (const page of mod.pages ?? []) removeContent(dir, page)
+    // 下级也在这个 module 的子树里，一并清掉
+    for (const page of (mod.pages ?? []).flatMap(subtreePages)) removeContent(dir, page)
   }
   return stateOf(workspace, id)
 }
@@ -286,9 +325,10 @@ export function saveDoc(workspace, id, pageId, text, baseRevision) {
   const page = flattenPages(loadSite(dir)).find((entry) => entry.id === pageId)
   if (!page) throw new BadRequest(`清单里没有这个 page：${pageId}`)
   if (page.type !== 'doc') throw new BadRequest(`${pageId} 不是 doc 页`)
-  const { text: body, rescued } = externalizeInlineImages(dir, text)
+  const { text: withoutInline, rescued } = externalizeInlineImages(dir, text)
+  const { text: body, stripped } = stripEmptyBreaks(withoutInline)
   writeFileSync(contentPathOf(dir, page), body, 'utf8')
-  return { rescued, ...stateOf(workspace, id) }
+  return { rescued, stripped, ...stateOf(workspace, id) }
 }
 
 const ASSET_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'])
@@ -345,6 +385,23 @@ function externalizeInlineImages(dir, text) {
   return { text: next, rescued }
 }
 
+/** 孤立成行、整行只有一个 <br> —— 编辑器里空段落序列化后的样子。 */
+const EMPTY_BREAK_LINE = /^[ \t]*<br\s*\/?>[ \t]*(?:\r?\n|$)/gim
+
+/**
+ * 编辑器里的空段落在 Markdown 里表达不出来，Crepe 序列化时会留一行孤零零的 <br />。
+ * 渲染器开着 html: false，那行到了产物里会原样显示成「<br />」四个字 —— 它是序列化的
+ * 副产物，不是使用者写的内容。落盘前抹掉；行内出现的 <br> 是使用者自己写的换行，不碰。
+ */
+function stripEmptyBreaks(text) {
+  let stripped = 0
+  const next = text.replace(EMPTY_BREAK_LINE, () => {
+    stripped += 1
+    return ''
+  })
+  return { text: next, stripped }
+}
+
 /**
  * orphan file 的两个出口之一：导入为页面。
  * 只往清单里加一条，磁盘上的文件原地不动 —— 它就是这一页的正文。
@@ -364,7 +421,6 @@ export function importOrphan(workspace, id, { path, moduleId, title }, baseRevis
   const type = path.startsWith('prototypes/') ? 'proto' : 'doc'
   mod.pages = [...(mod.pages ?? []), {
     id: pageId,
-    code: nextCode(mod),
     type,
     title: title?.trim() || pageId,
   }]
@@ -381,6 +437,35 @@ export function deleteOrphan(workspace, id, path, baseRevision) {
   if (path.startsWith('prototypes/')) rmSync(join(dir, 'prototypes', pageId), { recursive: true, force: true })
   else unlinkSync(join(dir, 'pages', `${pageId}.md`))
   return stateOf(workspace, id)
+}
+
+/**
+ * 闲置素材的出口：删掉 assets/ 下已经没有 doc 页引用的文件。
+ * 删之前照着磁盘当下的正文再核一遍引用 —— 编辑器送来的核对结果是它自己那份快照，
+ * 可能已经过期；删除不可恢复，宁可拒绝，也不凭过期的判断误删。
+ */
+export function deleteUnusedAsset(workspace, id, path, baseRevision) {
+  const dir = resolveSite(workspace, id)
+  assertWrite(dir, baseRevision)
+
+  const name = assetNameOf(path)
+  const file = join(dir, 'assets', name)
+  if (!existsSync(file) || statSync(file).isDirectory()) throw new BadRequest(`磁盘上没有这个素材：${path}`)
+  if (referencedAssets(dir, flattenPages(loadSite(dir))).has(name.toLowerCase())) {
+    throw new BadRequest(`${path} 还被正文引用着，先改正文再删文件`)
+  }
+
+  unlinkSync(file)
+  return stateOf(workspace, id)
+}
+
+/** 只认 assets/ 下的相对文件名，挡掉绝对路径与 ../ 越界。 */
+function assetNameOf(path) {
+  const name = String(path ?? '').replace(/^assets\//, '')
+  if (!name || name === path || name.includes('..') || name.includes('\\') || name.startsWith('/')) {
+    throw new BadRequest(`不是 assets/ 下的合法路径：${path}`)
+  }
+  return name
 }
 
 /** 把 doctor 报的 orphan 路径还原成 page id，并挡住越界与误伤。 */

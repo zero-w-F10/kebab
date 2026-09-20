@@ -7,6 +7,7 @@
   --accent: #2b6cff;
   --danger: #e6483d;
   --warn: #b26a00;
+  --sans: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
 }
 
 * { box-sizing: border-box; }
@@ -15,7 +16,9 @@ html, body { height: 100%; }
 
 body {
   margin: 0;
-  font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.6;
   color: var(--ink);
   background: var(--bg);
 }
@@ -59,36 +62,99 @@ input:focus, select:focus { outline: 2px solid #cddcff; border-color: var(--acce
 
 .dim { color: var(--dim); font-size: 12px; }
 
-.hint { color: var(--dim); margin: 8px 0; }
+.hint { color: var(--dim); margin: 8px 0; padding: 0 14px; }
 
 /* ---------- 骨架 ---------- */
 
 .shell { display: flex; flex-direction: column; height: 100vh; }
 
+/* ---------- 顶部工具栏 ---------- */
+
 .bar {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 9px 16px;
+  gap: 10px;
+  padding: 7px 12px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
 }
 
-.bar-brand { display: flex; align-items: baseline; gap: 6px; margin-right: 8px; }
+.bar-brand { display: flex; align-items: center; gap: 6px; margin-right: 4px; }
 
-.field-inline { display: flex; align-items: center; gap: 6px; }
-.field-inline > span { color: var(--dim); font-size: 12px; }
-.field-inline input { width: 200px; }
+.brand-logo { display: block; width: 18px; height: 18px; border-radius: 4px; }
 
-.bar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.field-inline { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.field-label { flex: 0 0 auto; color: var(--dim); font-size: 12px; }
 
-.status { font-size: 12px; color: var(--dim); }
+/* 站点标题与副标题平时是只读文字，双击才换成一个输入框 */
+.field-value {
+  max-width: 240px;
+  padding: 3px 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+}
+
+.field-value:hover { background: #f4f7ff; border-color: #e2ebff; }
+.field-value.empty { color: var(--dim); }
+
+.inline-edit {
+  min-width: 120px;
+  padding: 2px 6px;
+  border-color: var(--accent);
+}
+
+.bar-right { display: flex; align-items: center; gap: 4px; margin-left: auto; min-width: 0; }
+
+.status { font-size: 12px; color: var(--dim); white-space: nowrap; }
 .status.dirty { color: var(--warn); }
 .status.stale { color: var(--danger); font-weight: 600; }
 
-.notice { font-size: 12px; }
+.notice {
+  max-width: 320px;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .notice.error { color: var(--danger); }
+
+.bar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  background: none;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.bar-btn:hover:not(:disabled) { background: #f1f4f9; }
+.bar-btn.alert { color: var(--danger); }
+
+.bar-icon { font-size: 12px; color: var(--dim); }
+.bar-btn.alert .bar-icon { color: var(--danger); }
+
+/* 核对的问题条数：0 时退成灰底 */
+.badge {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.badge.zero { background: #e6e9ee; color: var(--dim); }
+
+#save { padding: 5px 14px; }
 
 .body { flex: 1 1 auto; display: flex; min-height: 0; }
 
@@ -103,59 +169,88 @@ input:focus, select:focus { outline: 2px solid #cddcff; border-color: var(--acce
   overflow: auto;
 }
 
-.side-head, .side-foot, .foot-head {
+.side-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
 }
-
-.side-head, .foot-head { border-bottom: 1px solid var(--line); justify-content: space-between; }
-.side-foot { border-top: 1px solid var(--line); margin-top: auto; }
 
 .modules, .pages, .problems { list-style: none; margin: 0; padding: 0; }
 
 .module { border-bottom: 1px solid var(--line); }
 
-.module-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; }
+.module-head { display: flex; align-items: center; gap: 6px; padding: 7px 8px; }
 
-.prefix {
-  font: 600 11px/1 ui-monospace, Consolas, monospace;
-  letter-spacing: .04em;
-  padding: 4px 6px;
-  border-radius: 4px;
-  background: #eef3ff;
-  color: var(--accent);
+/* 节点标题是只读文字，双击就地改名 */
+.node-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 2px 6px;
+  border-radius: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
 }
 
-.module-title { flex: 1 1 auto; min-width: 0; border-color: transparent; font-weight: 600; }
+.module-head .node-title { font-weight: 600; }
+.node-title:hover { background: #f1f4f9; }
 
 .pages { padding: 0 0 6px; }
 
+/* 一页：行 + 它的下级列表。行与下级是兄弟，行的 rect 才只覆盖它自己（拖拽按行高算落点） */
 .page {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 10px 5px 18px;
+  /* 缩进按层级走：根级 18px，每往下一级多 14px */
+  padding: 4px 8px 4px calc(4px + var(--depth, 1) * 14px);
   cursor: pointer;
 }
 
 .page:hover { background: #f7f9fc; }
 .page.current { background: #eef3ff; }
 
-.grip { color: #c8ccd4; cursor: grab; font-size: 12px; }
-
-.code {
-  font: 11px/1 ui-monospace, Consolas, monospace;
-  color: var(--dim);
-  flex: 0 0 auto;
-}
-
-.page-title { flex: 1 1 auto; min-width: 0; border-color: transparent; background: none; }
+.grip { color: #c8ccd4; cursor: grab; font-size: 12px; user-select: none; }
+.grip:active { cursor: grabbing; }
 
 .type { font-size: 11px; color: var(--dim); }
 
-.drop-target { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* 行尾的「⋯」：平时藏起来，指到这一行才露出来 */
+.more {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  background: none;
+  color: var(--dim);
+  line-height: 1;
+  opacity: 0;
+  transition: opacity .12s;
+}
+
+.module-head:hover .more,
+.page:hover .more,
+.problem:hover .more { opacity: 1; }
+
+.more:hover, .more.active { background: #eef1f5; color: var(--ink); opacity: 1; }
+.more:focus-visible { opacity: 1; }
+
+/* 拖拽落点：before/after 在行的上沿/下沿画线，into 把整行描一圈 */
+.page.dragging, .module.dragging { opacity: .45; }
+
+.page.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.page.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+
+/* 拖到 page 行的中段 = 变成它的下级；描一圈，和前后两条线区分开 */
+.page.drop-into { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.module-head.drop-before { box-shadow: inset 0 3px 0 var(--accent); }
+.module-head.drop-after { box-shadow: inset 0 -3px 0 var(--accent); }
+
+/* 拖 page 到某个 module 的空白处：整块描一圈，表示放进这个 module 的根级末尾 */
+.module.drop-into { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* ---------- 右栏：内容 ---------- */
 
@@ -191,7 +286,10 @@ input:focus, select:focus { outline: 2px solid #cddcff; border-color: var(--acce
   flex: 1 1 auto;
   --crepe-color-background: var(--panel);
   --crepe-color-on-background: var(--ink);
-  --crepe-font-default: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --crepe-font-default: var(--sans);
+  /* Crepe 主题给 h1–h6 配的是衬线栈（'Noto Serif', Cambria, … serif），
+     Windows 上没装 Noto Serif，中文标题就落到了宋体 —— 这里跟正文统一 */
+  --crepe-font-title: var(--sans);
 }
 
 /* 关掉 ImageBlock 之后图片退回普通 image 节点，给它一个宽度约束 */
@@ -199,37 +297,42 @@ input:focus, select:focus { outline: 2px solid #cddcff; border-color: var(--acce
 
 .proto-frame { flex: 1 1 auto; width: 100%; border: 0; background: #fff; }
 
-/* ---------- 底栏：核对 ---------- */
+/* ---------- 弹出菜单 ---------- */
 
-.foot {
-  flex: 0 0 auto;
-  max-height: 32vh;
-  overflow: auto;
+.menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 132px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
   background: var(--panel);
-  border-top: 1px solid var(--line);
+  box-shadow: 0 10px 28px rgba(31, 35, 41, .18);
 }
 
-.problems { padding: 0 14px 12px; }
-
-.problem { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 13px; }
-
-.tag {
-  flex: 0 0 auto;
-  font-size: 11px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: #eef1f5;
-  color: var(--dim);
+/* 选择器都带 .menu 前缀：`button.danger`（实心红按钮）的具体性比单个类高，
+   压不住它的话，危险菜单项会变成红底红字，得 hover 一下才恢复成浅底 */
+.menu .menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
 }
 
-.problem.duplicate .tag { background: #fdeceb; color: var(--danger); }
-.problem.dangling .tag { background: #fff4e5; color: var(--warn); }
+.menu .menu-item:hover { background: #f1f4f9; }
+.menu .menu-item.danger { color: var(--danger); }
+.menu .menu-item.danger:hover { background: #fdeceb; }
 
 /* ---------- 弹层 ---------- */
 
 .modal-backdrop {
   position: fixed;
   inset: 0;
+  z-index: 500;
   display: grid;
   place-items: center;
   background: rgba(31, 35, 41, .35);
@@ -258,3 +361,22 @@ input:focus, select:focus { outline: 2px solid #cddcff; border-color: var(--acce
 .modal-error { margin: 0; min-height: 18px; font-size: 12px; color: var(--danger); }
 
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ---------- 核对的问题清单 ---------- */
+
+.problem { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 13px; }
+
+.problem-text { flex: 1 1 auto; min-width: 0; }
+
+.tag {
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #eef1f5;
+  color: var(--dim);
+}
+
+.problem.duplicate .tag { background: #fdeceb; color: var(--danger); }
+.problem.dangling .tag { background: #fff4e5; color: var(--warn); }
+.problem.unused .tag { background: #eef3ff; color: var(--accent); }

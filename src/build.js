@@ -21,6 +21,9 @@ import { createRenderer } from './render.js'
 const here = dirname(fileURLToPath(import.meta.url))
 const defaultWorkspace = join(here, '..')
 
+/** 只有会让产物出错的才拦构建：清单声明的页面找不到内容、编号撞车。 */
+const BLOCKING = new Set(['dangling', 'duplicate'])
+
 /**
  * 构建一个产品原型：先核对清单与磁盘，再扫原型，最后铺产物。
  * 不打印任何东西，只把结果交回去，由调用方决定怎么说。
@@ -30,7 +33,8 @@ export function buildSite(workspace, { id, dir }, { force = false } = {}) {
   const pages = flattenPages(site)
 
   const problems = doctor(dir, site)
-  if (problems.length > 0) return { id, ok: false, stage: 'doctor', problems }
+  const blocking = problems.filter((problem) => BLOCKING.has(problem.kind))
+  if (blocking.length > 0) return { id, ok: false, stage: 'doctor', problems: blocking }
 
   const protoProblems = pages
     .filter((page) => page.type === 'proto')
@@ -48,6 +52,10 @@ export function buildSite(workspace, { id, dir }, { force = false } = {}) {
     if (existsSync(from)) cpSync(from, join(dist, sub), { recursive: true })
   }
   cpSync(join(here, 'style.css'), join(dist, 'kebab.css'))
+  // 图标也是本地文件：产物零公网资源，file:// 下双击打开照样有 favicon。
+  // SVG 清晰，PNG 用来兜住不肯拿 SVG 当 favicon 的浏览器（见 tools/render-icon-png.ps1）
+  cpSync(join(here, 'icon.svg'), join(dist, 'kebab.svg'))
+  cpSync(join(here, 'icon.png'), join(dist, 'kebab.png'))
 
   for (const page of pages) {
     const body = page.type === 'proto'
@@ -68,7 +76,8 @@ export function buildSite(workspace, { id, dir }, { force = false } = {}) {
     pages: pages.length,
     // 按 --force 放行时，问题仍带出来给使用者过目
     forced: protoProblems.length > 0,
-    problems: protoProblems,
+    // 没拦住构建的也带回去：孤儿文件、闲置素材、--force 放行的原型问题
+    problems: [...problems, ...protoProblems],
     dist: `sites/${id}/dist`,
   }
 }
@@ -85,6 +94,8 @@ export function buildPortal(workspace, sites) {
   rmSync(portal, { recursive: true, force: true })
   mkdirSync(portal, { recursive: true })
   cpSync(join(here, 'style.css'), join(portal, 'kebab.css'))
+  cpSync(join(here, 'icon.svg'), join(portal, 'kebab.svg'))
+  cpSync(join(here, 'icon.png'), join(portal, 'kebab.png'))
   writeFileSync(join(portal, 'index.html'), renderPortalPage(entries), 'utf8')
 
   return { ready: entries.filter((entry) => entry.built).length, total: entries.length }
@@ -142,6 +153,9 @@ if (isMain) {
     if (result.ok) {
       const suffix = result.forced ? '（按 --force 放行）' : ''
       console.log(`  ${result.id}：${result.pages} 个页面 + 概览页 → sites/${result.id}/dist/${suffix}`)
+      if (result.problems.length > 0) {
+        report(`[${result.id}] ${result.problems.length} 个提示，没有拦住构建`, result.problems.map(describe))
+      }
     } else {
       const heading = result.stage === 'doctor'
         ? `[${result.id}] doctor 发现清单与磁盘不一致`

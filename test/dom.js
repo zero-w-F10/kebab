@@ -68,7 +68,7 @@ export function installDom() {
  * 顺序有讲究：Milkdown 的模块在 import 的那一刻就会碰 document，
  * 所以必须先把 DOM 装好，再动态 import 它。
  */
-export async function mountEditor(t, markdown) {
+export async function mountEditor(t, markdown, onChange = () => {}) {
   installDom()
   const { mountDocEditor } = await import('../src/editor/ui/doc-editor.js')
 
@@ -79,7 +79,7 @@ export async function mountEditor(t, markdown) {
     root: host,
     markdown,
     onUpload: async () => 'assets/uploaded.png',
-    onChange: () => {},
+    onChange,
   })
   t.after(() => handle.destroy())
   return handle

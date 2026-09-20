@@ -78,15 +78,26 @@ body {
   font-weight: 600;
 }
 
-.kebab-code {
-  flex: 0 0 auto;
-  font: 12px/1.7 ui-monospace, Consolas, monospace;
-  color: var(--kebab-muted);
+/* 下级页面再套一层 ul：整列缩进，并用一条细线提示层级 */
+.kebab-tree ul.kebab-sub,
+.kebab-overview-module ul.kebab-sub {
+  margin: 0;
+  padding-left: 14px;
+  border-left: 1px solid var(--kebab-line);
 }
 
-.kebab-tree a.is-current .kebab-code { color: var(--kebab-accent); }
+.kebab-overview-module ul.kebab-sub a { font-size: 14px; }
 
-.kebab-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+/* 正文区是「纸」：底色铺白，正文里的浅底（表头、隔行斑马纹）才有对比可言。
+   这里原先是跟着 body 走的 --kebab-bg，跟表格隔行用的是同一个颜色 ——
+   两处浅底等于没加，表头也只剩加粗能看出来。 */
+.kebab-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--kebab-panel);
+}
 
 /* doc 页 */
 .kebab-doc { padding: 36px 48px 80px; max-width: 880px; }
@@ -123,6 +134,37 @@ body {
   padding: 1px 5px;
   font: 13px/1.6 ui-monospace, Consolas, monospace;
 }
+
+/* 表格：Markdown 的 `|` 表格会渲染成真的 <table>，但浏览器默认不给框线 ——
+   字段清单这类内容靠框线才看得清行列，这里给明确的线，并让表头压出底色。
+   列数多的表靠 100% 宽加折行留在正文宽度内，不做横向滚动。 */
+.kebab-prose table {
+  width: 100%;
+  margin: 16px 0 24px;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.kebab-prose th,
+.kebab-prose td {
+  padding: 7px 10px;
+  border: 1px solid var(--kebab-line);
+  text-align: left;
+  vertical-align: top;
+  /* 备注列里常有 morning_evening 这种长串，不让它把表格撑破 */
+  overflow-wrap: anywhere;
+}
+
+.kebab-prose th {
+  background: var(--kebab-bg);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 隔行浅底：字段清单这类表动辄二三十行，靠它才跟得住行。
+   底色与表头同一个浅灰 —— 两处都是「非内容底色」，不再引第三个颜色。 */
+.kebab-prose tbody tr:nth-child(even) { background: var(--kebab-bg); }
 
 /* proto 页 */
 .kebab-proto { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
