@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
@@ -245,7 +245,7 @@ test('importOrphan 只改清单，磁盘上的文件原地不动', (t) => {
   assert.equal(after.problems.filter((problem) => problem.kind === 'orphan').length, 0)
 })
 
-test(' importOrphan 拒绝越界路径、已被引用的 id、不合规的 id', (t) => {
+test('importOrphan 挡住越界路径与已经被清单引用的文件', (t) => {
   const workspace = makeWorkspace(t)
   const { id, dir } = makeSite(workspace)
   write(workspace, `sites/${id}/pages/extra.md`, 'x')
@@ -255,19 +255,159 @@ test(' importOrphan 拒绝越界路径、已被引用的 id、不合规的 id', 
   bad('../site.json')
   bad('assets/多余.md')
   bad('pages/login-doc.md')
-  bad('pages/Bad Name.md')
+
+  // 文件在两次操作之间没了：报出来，不算失败
+  const gone = store.importOrphan(workspace, id, { path: 'pages/nope.md', moduleId: 'login', title: 'x' }, revision)
+  assert.equal(gone.imported.length, 0)
+  assert.deepEqual(gone.skipped, [{ path: 'pages/nope.md', reason: '磁盘上没有这个文件了' }])
+})
+
+test('收编中文名的 md：文件改名成 <id>.md，标题取正文第一条标题', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id, dir } = makeSite(workspace)
+  write(workspace, `sites/${id}/pages/登录页说明.md`, '# 登录页说明\n\n正文\n')
+
+  const after = store.importOrphan(workspace, id, { path: 'pages/登录页说明.md', moduleId: 'login' }, store.hashTree(dir))
+  const page = after.site.modules[0].pages.at(-1)
+
+  assert.equal(page.id, 'doc-1', '折不出 id 就按序号编')
+  assert.equal(page.title, '登录页说明')
+  assert.ok(!existsSync(join(dir, 'pages', '登录页说明.md')), '原文件改名了')
+  assert.equal(readFileSync(join(dir, 'pages', 'doc-1.md'), 'utf8'), '正文\n', '顶格的 H1 升为页面标题，正文里抹掉')
+  assert.equal(after.imported[0].renamed, 'doc-1.md')
+  assert.equal(after.problems.filter((problem) => problem.kind === 'orphan').length, 0)
+})
+
+test('正文顶格的 H1 当页面标题；## 属于章节，正文一个字节都不动', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id, dir } = makeSite(workspace)
+  write(workspace, `sites/${id}/pages/spec.md`, '# AI录单 — Spec\n\n## Problem\n\n正文\n')
+  write(workspace, `sites/${id}/pages/notes.md`, '## 一、背景\n\n正文\n')
+
+  const after = store.importOrphans(workspace, id, {
+    moduleId: 'login',
+    items: [{ path: 'pages/spec.md' }, { path: 'pages/notes.md' }],
+  }, store.hashTree(dir))
+
+  const imported = Object.fromEntries(after.imported.map((item) => [item.id, item]))
+  assert.equal(imported.spec.title, 'AI录单 — Spec')
+  assert.equal(imported.notes.title, '一、背景')
+  assert.equal(readFileSync(join(dir, 'pages', 'spec.md'), 'utf8'), '## Problem\n\n正文\n')
+  assert.equal(readFileSync(join(dir, 'pages', 'notes.md'), 'utf8'), '## 一、背景\n\n正文\n', '## 是章节，留着')
+  assert.deepEqual(imported.notes.renamed, null)
+})
+
+test('大小写不对的文件名也要收编：CONTEXT.md → context.md，收编后 doctor 零问题', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id, dir } = makeSite(workspace)
+  write(workspace, `sites/${id}/pages/CONTEXT.md`, '# AI录单\n\n术语表\n')
+
+  const plan = store.orphanPlan(workspace, id)
+  assert.deepEqual(
+    plan.items.map((item) => [item.id, item.title, item.renamed]),
+    [['context', 'AI录单', 'context.md']],
+  )
+
+  const after = store.importOrphan(workspace, id, { path: 'pages/CONTEXT.md', moduleId: 'login' }, store.hashTree(dir))
+  assert.equal(after.imported.length, 1)
+  // Windows 上两个名字指向同一个文件，但 doctor 比文件名是大小写敏感的 ——
+  // 不改掉目录项里的名字，这一页既认不出来、又会被一直报成孤儿
+  assert.ok(readdirSync(join(dir, 'pages')).includes('context.md'), '目录项里的名字要真的改成小写')
+  assert.equal(after.problems.length, 0, `收编后应零问题，实际：${JSON.stringify(after.problems)}`)
+  assert.equal(readFileSync(join(dir, 'pages', 'context.md'), 'utf8'), '术语表\n', 'H1 升为标题')
+})
+
+test('孤儿文件其实是某一页的正文时（Windows 上文件名只差大小写）不重复收编', (t) => {
+  const workspace = makeWorkspace(t)
+  // 清单里声明了 notes，它的正文却没落盘（悬空）；磁盘上躺着另一个 Notes.md
+  const { id, dir } = makeSite(workspace, 'demo', (site) => {
+    site.modules[0].pages.push({ id: 'notes', type: 'doc', title: '笔记' })
+    return site
+  })
+  write(workspace, `sites/${id}/pages/Notes.md`, '## 另一个\n')
+
+  if (existsSync(join(dir, 'pages', 'notes.md'))) {
+    // 大小写不敏感的文件系统（Windows、macOS）：两个名字是同一个文件，
+    // 那就是 notes 这一页的正文，不能当孤儿搬走
+    assert.equal(store.orphanPlan(workspace, id).items.length, 0, '计划里就不该出现')
+    assert.match(store.orphanPlan(workspace, id).skipped[0].reason, /已经是清单里某一页的正文/)
+    assert.throws(
+      () => store.importOrphans(workspace, id, { moduleId: 'login', items: [{ path: 'pages/Notes.md' }] }, store.hashTree(dir)),
+      /已经被清单引用了/,
+    )
+    assert.equal(readFileSync(join(dir, 'pages', 'Notes.md'), 'utf8'), '## 另一个\n', '文件一个字节没动')
+    return
+  }
+
+  // 大小写敏感的文件系统（Linux）：两个文件各算各的，折出的 id 被清单占了就另编号
+  const after = store.importOrphans(workspace, id, {
+    moduleId: 'login',
+    items: [{ path: 'pages/Notes.md' }],
+  }, store.hashTree(dir))
+  assert.deepEqual(after.imported.map((item) => item.id), ['doc-1'], '不跟清单里的 id 撞车')
+  assert.equal(after.imported[0].renamed, 'doc-1.md')
+  assert.ok(!after.problems.some((problem) => problem.kind === 'duplicate'))
+})
+
+test('importOrphans 一次收编多个，收编不了的只跳过它自己', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id, dir } = makeSite(workspace)
+  write(workspace, `sites/${id}/pages/one.md`, '## 甲\n')
+  write(workspace, `sites/${id}/prototypes/坏 名字/index.html`, '<!doctype html>')
+  write(workspace, `sites/${id}/pages/中文.md`, '# 乙\n')
+
+  const after = store.importOrphans(workspace, id, {
+    moduleId: 'login',
+    items: [{ path: 'pages/one.md' }, { path: 'prototypes/坏 名字' }, { path: 'pages/中文.md' }],
+  }, store.hashTree(dir))
+
+  assert.deepEqual(after.imported.map((item) => item.id), ['one', 'doc-1'], '顺序就是清单顺序')
+  assert.equal(after.skipped.length, 1)
+  assert.match(after.skipped[0].reason, /目录名/)
+  assert.deepEqual(after.site.modules[0].pages.map((page) => page.id), ['login-doc', 'login-proto', 'one', 'doc-1'])
+})
+
+test('orphanPlan 只算不改：磁盘一个字节都不动', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id, dir } = makeSite(workspace)
+  write(workspace, `sites/${id}/pages/说明.md`, '# 收编说明\n\n正文\n')
+  write(workspace, `sites/${id}/prototypes/leftover/index.html`, '<!doctype html>')
+  const before = store.hashTree(dir)
+
+  const plan = store.orphanPlan(workspace, id)
+  const byPath = Object.fromEntries(plan.items.map((item) => [item.path, item]))
+
+  assert.deepEqual(byPath['pages/说明.md'], {
+    path: 'pages/说明.md',
+    kind: 'doc',
+    id: 'doc-1',
+    title: '收编说明',
+    renamed: 'doc-1.md',
+    titleFromHeading: true,
+  })
+  assert.equal(byPath['prototypes/leftover'].kind, 'proto')
+  assert.equal(byPath['prototypes/leftover'].renamed, null)
+  assert.equal(store.hashTree(dir), before, '计划不落盘')
 })
 
 test('deleteOrphan 删掉磁盘上的文件，但只认 pages/ 与 prototypes/', (t) => {
   const workspace = makeWorkspace(t)
   const { id, dir } = makeSite(workspace)
   write(workspace, `sites/${id}/prototypes/leftover/index.html`, '<!doctype html>')
+  write(workspace, `sites/${id}/pages/中文名.md`, '## 正文\n')
   write(workspace, `sites/${id}/assets/pic.png`, 'x')
 
   assert.throws(() => store.deleteOrphan(workspace, id, 'assets/pic.png', store.hashTree(dir)), store.BadRequest)
-  const after = store.deleteOrphan(workspace, id, 'prototypes/leftover', store.hashTree(dir))
+  // 清单里已经引用的文件不给删 —— 那是删页该管的事
+  assert.throws(() => store.deleteOrphan(workspace, id, 'pages/login-doc.md', store.hashTree(dir)), store.BadRequest)
+
+  // 中文名的孤儿照样删得掉：删除跟 page id 合不合规无关
+  const after = store.deleteOrphan(workspace, id, 'pages/中文名.md', store.hashTree(dir))
+  assert.ok(!existsSync(join(dir, 'pages', '中文名.md')))
+
+  const done = store.deleteOrphan(workspace, id, 'prototypes/leftover', after.revision)
   assert.ok(!existsSync(join(dir, 'prototypes', 'leftover')))
-  assert.equal(after.problems.filter((problem) => problem.kind === 'orphan').length, 0)
+  assert.equal(done.problems.filter((problem) => problem.kind === 'orphan').length, 0)
 })
 
 /* ---------- 素材与正文 ---------- */
@@ -399,7 +539,7 @@ test('resolveSite 拒绝不存在的产品原型', (t) => {
   assert.throws(() => store.resolveSite(workspace, 'nope'), store.BadRequest)
 })
 
-test('page id 只收小写英文数字与短横线，中文名会被拒', (t) => {
+test('新建页面时 page id 只收小写英文数字与短横线', (t) => {
   const workspace = makeWorkspace(t)
   const { id, dir } = makeSite(workspace)
   const revision = store.hashTree(dir)
@@ -408,9 +548,5 @@ test('page id 只收小写英文数字与短横线，中文名会被拒', (t) =>
     () => store.createPage(workspace, id, { moduleId: 'login', pageId: '登录页', type: 'doc', title: 'x' }, revision),
     store.BadRequest,
   )
-  // 孤儿文件若是中文名，也导不进来 —— 只能改名或删掉
-  assert.throws(
-    () => store.importOrphan(workspace, id, { path: 'pages/登录页.md', moduleId: 'login', title: 'x' }, revision),
-    store.BadRequest,
-  )
+  // 收编孤儿文件是另一条路：中文名在那里是常态，改个名让它合规，见上面的用例
 })

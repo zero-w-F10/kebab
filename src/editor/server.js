@@ -152,6 +152,10 @@ export function createEditorServer({ workspace, site, uiDir = defaultUiDir }) {
           return json(res, 200, store.deleteModule(workspace, site, body.id, body, body.baseRevision))
         case 'POST /api/doc/save':
           return json(res, 200, store.saveDoc(workspace, site, body.id, body.text, body.baseRevision))
+        case 'GET /api/orphans/plan':
+          return json(res, 200, store.orphanPlan(workspace, site))
+        case 'POST /api/orphans/import':
+          return json(res, 200, store.importOrphans(workspace, site, body, body.baseRevision))
         case 'POST /api/orphan/import':
           return json(res, 200, store.importOrphan(workspace, site, body, body.baseRevision))
         case 'POST /api/orphan/delete':

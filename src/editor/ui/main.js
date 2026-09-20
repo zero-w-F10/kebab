@@ -79,6 +79,11 @@ async function request(method, path, { params, body } = {}) {
     markStale()
     throw new Error('磁盘内容已被外部改动，请先重载')
   }
+  if (response.status === 404 && String(path).startsWith('/api/')) {
+    // 前端每次请求都现读磁盘上的 bundle，服务端却是启动时载入的：改了代码而编辑器一直开着，
+    // 就会落到这里 —— 界面是新的、接口是旧的。把这句话说出来，省得对着「没有这个接口」发愣。
+    throw new Error(`${payload.error ?? '接口不存在'}。编辑器服务可能还是改代码之前启动的那个进程，重启 npm run edit 再试`)
+  }
   if (!response.ok) throw new Error(payload.error ?? `请求失败（HTTP ${response.status}）`)
   return payload
 }
@@ -95,6 +100,8 @@ const api = {
   createModule: (payload) => request('POST', '/api/module/create', { body: { ...payload, ...base() } }),
   deleteModule: (id, withFiles) => request('POST', '/api/module/delete', { body: { id, withFiles, ...base() } }),
   build: (force) => request('POST', '/api/build', { body: { force } }),
+  orphanPlan: () => request('GET', '/api/orphans/plan'),
+  importOrphans: (payload) => request('POST', '/api/orphans/import', { body: { ...payload, ...base() } }),
   importOrphan: (payload) => request('POST', '/api/orphan/import', { body: { ...payload, ...base() } }),
   deleteOrphan: (path) => request('POST', '/api/orphan/delete', { body: { path, ...base() } }),
   deleteUnusedAsset: (path) => request('POST', '/api/asset/delete', { body: { path, ...base() } }),
@@ -496,7 +503,7 @@ function openProblems() {
       h('span', { class: 'tag', text: '孤儿' }),
       h('span', { class: 'problem-text', text: problem.message }),
       moreButton((anchor) => openMenu(anchor, [
-        { label: '导入为页面', onpick: () => { closeModal(); openImportOrphan(path) } },
+        { label: '收编为页面', onpick: () => { closeModal(); openImportOrphan(path) } },
         { label: '删除文件', danger: true, onpick: () => { closeModal(); openDeleteOrphan(path) } },
       ])),
     ))
@@ -512,12 +519,24 @@ function openProblems() {
     ))
   }
 
+  // 一次一个太慢：pages/ 下的孤儿 md 给一个批量出口。prototypes/ 的目录名就是 page id
+  // 本身，改不了名也就编不了号，仍旧走行尾的「⋯」逐个处理。
+  const orphanDocs = groups.orphan.filter((problem) => problem.path?.startsWith('pages/'))
+  const actions = orphanDocs.length > 0
+    ? [h('button', {
+      type: 'button',
+      text: `全部收编 ${orphanDocs.length} 个 md`,
+      title: '把 pages/ 下没进清单的 md 一次收编成 doc 页',
+      onclick: () => { closeModal(); openImportAll() },
+    })]
+    : []
+
   openPanel('核对', rows.length === 0
     ? [h('p', { class: 'dim', text: '清单与磁盘一致：没有悬空引用、孤儿文件、闲置素材或重复编号。' })]
     : [
       h('p', { class: 'dim', text: `${state.problems.length} 个问题。行尾的「⋯」是它自己的出口。` }),
       h('ul', { class: 'problems' }, ...rows),
-    ])
+    ], actions)
 }
 
 const problemRow = (tag, kind, message) => h('li', { class: `problem ${kind}` },
@@ -902,7 +921,11 @@ function closeModal() {
   modalNode.replaceChildren()
 }
 
-function openModal({ title, fields = [], checkbox, submitLabel = '确定', danger = false }, onSubmit) {
+/**
+ * 弹层表单。note 是一句话提示，nodes 是要摊开给人看的内容（比如收编清单），
+ * onDone 在弹层收起、界面重绘之后拿到 onSubmit 的返回值 —— 结果要另开一个面板时用得上。
+ */
+function openModal({ title, fields = [], checkbox, note, nodes = [], submitLabel = '确定', danger = false }, onSubmit, onDone) {
   const inputs = {}
   const errorLine = h('p', { class: 'modal-error' })
 
@@ -930,9 +953,10 @@ function openModal({ title, fields = [], checkbox, submitLabel = '确定', dange
       const values = Object.fromEntries(Object.entries(inputs).map(([name, node]) => [name, node.value]))
       values.withFiles = checkboxNode ? checkboxNode.checked : false
       try {
-        await onSubmit(values)
+        const result = await onSubmit(values)
         closeModal()
         render()
+        if (onDone) onDone(result)
       } catch (error) {
         errorLine.textContent = error.message
       }
@@ -940,6 +964,8 @@ function openModal({ title, fields = [], checkbox, submitLabel = '确定', dange
   },
     h('h2', { text: title }),
     ...fieldNodes,
+    note ? h('p', { class: 'dim', text: note }) : null,
+    ...nodes,
     errorLine,
     h('div', { class: 'modal-actions' },
       h('button', { type: 'button', class: 'ghost', text: '取消', onclick: closeModal }),
@@ -1107,29 +1133,180 @@ function openDeleteModule(mod) {
   }))
 }
 
-function openImportOrphan(path) {
+/** 弹层里的模块选择：孤儿文件总得有个地方安放。 */
+const moduleField = (modules) => ({
+  name: 'moduleId',
+  label: '放进哪个模块',
+  type: 'select',
+  value: modules[0].id,
+  options: modules.map((mod) => ({ value: mod.id, label: mod.title ?? mod.id })),
+})
+
+/**
+ * 落盘前先保证内存里的清单跟磁盘一致。收编与删除都是写操作，陈旧写入会被服务端 409 拦下。
+ *
+ * 老实做法是让使用者点一次「重载」，但**往 pages/ 里丢文件本身就会把状态变陈旧** ——
+ * 那一步不自动做掉，「一键收编」就永远差一次手动重载。所以分两种：没有本地改动就自己重载
+ * （没有东西可丢），有本地改动则请他先处理，免得把没保存的改动冲掉。
+ */
+async function ensureFresh(action) {
+  if (state.stale) {
+    if (state.treeDirty || state.doc.dirty) {
+      notice(`磁盘已被外部改动。先点「重载」再${action}（没保存的改动会丢）。`, 'error')
+      render()
+      return false
+    }
+    await reload()
+  }
+  if (!state.treeDirty && !state.doc.dirty) return true
+  if (!window.confirm(`有还没保存的改动。先保存再${action}？`)) return false
+  await saveAll()
+  return !state.treeDirty && !state.doc.dirty
+}
+
+/** 收编之前先问服务端「这些文件会变成什么」：改名与标题都在弹层里给人看过。 */
+async function fetchPlan(path) {
+  try {
+    const plan = await api.orphanPlan()
+    const item = (plan.items ?? []).find((entry) => entry.path === path)
+    if (item) return { item }
+    const why = (plan.skipped ?? []).find((entry) => entry.path === path)?.reason
+    return { error: `收编不了 ${path}：${why ?? '磁盘上找不到它了'}` }
+  } catch (error) {
+    return { error: error.message }
+  }
+}
+
+const locationOf = (item) => (item.kind === 'proto' ? `prototypes/${item.id}/` : `pages/${item.id}.md`)
+
+/** 单个孤儿文件：id 与标题先按计划预填，要改名时在弹层里说清楚。 */
+async function openImportOrphan(path) {
   const modules = state.tree.modules ?? []
   if (modules.length === 0) {
     notice('先建一个模块，孤儿文件才有地方安放。', 'error')
     render()
     return
   }
-  const suggestion = path.startsWith('prototypes/')
-    ? path.slice('prototypes/'.length)
-    : path.slice('pages/'.length).replace(/\.[^.]+$/, '')
+  if (!await ensureFresh('收编')) return
+
+  const { item, error } = await fetchPlan(path)
+  if (error) {
+    notice(error, 'error')
+    render()
+    return
+  }
+
+  const fields = [moduleField(modules)]
+  if (item.kind === 'doc') {
+    fields.push({ name: 'pageId', label: 'page id（正文位置是 pages/<id>.md）', value: item.id })
+  }
+  fields.push({ name: 'title', label: '页面标题', value: item.title })
 
   openModal({
-    title: `导入 ${path}`,
-    fields: [
-      { name: 'moduleId', label: '放进哪个模块', type: 'select', value: modules[0].id,
-        options: modules.map((mod) => ({ value: mod.id, label: mod.title ?? mod.id })) },
-      { name: 'title', label: '页面标题', value: suggestion },
-    ],
-    submitLabel: '导入',
-  }, (values) => api.importOrphan({ ...values, path }).then(applyState))
+    title: `收编 ${path}`,
+    fields,
+    note: item.kind === 'proto'
+      ? '原型目录名就是它的 page id，要改就先改目录名。'
+      : item.renamed ? `文件名得改成 ${item.renamed}，否则清单指不到这一页。` : null,
+    submitLabel: '收编',
+  }, async (values) => {
+    const payload = await api.importOrphan({ path, ...values })
+    applyState(payload)
+    return payload
+  }, openImportReport)
 }
 
-function openDeleteOrphan(path) {
+/** pages/ 下的孤儿 md 一次全收编：改名是唯一会动使用者文件的地方，清单先摊开给人看。 */
+async function openImportAll() {
+  const modules = state.tree.modules ?? []
+  if (modules.length === 0) {
+    notice('先建一个模块，孤儿文件才有地方安放。', 'error')
+    render()
+    return
+  }
+  if (!await ensureFresh('收编')) return
+
+  let plan
+  try {
+    plan = await api.orphanPlan()
+  } catch (error) {
+    notice(error.message, 'error')
+    render()
+    return
+  }
+
+  const items = (plan.items ?? []).filter((item) => item.kind === 'doc')
+  const skipped = plan.skipped ?? []
+  if (items.length === 0) {
+    notice(skipped.length > 0
+      ? `没有能收编的 md：${skipped.map((item) => `${item.path}（${item.reason}）`).join('；')}`
+      : 'pages/ 下没有孤儿 md', 'error')
+    render()
+    return
+  }
+
+  const renames = items.filter((item) => item.renamed)
+  openModal({
+    title: `收编 ${items.length} 个 md 为 doc 页`,
+    fields: [moduleField(modules)],
+    note: renames.length > 0
+      ? `${renames.length} 个文件的名字当不了 page id，收编时会把文件改成 pages/<id>.md。`
+      : null,
+    nodes: [
+      h('ul', { class: 'problems' }, ...items.map((item) => h('li', { class: 'problem' },
+        h('span', { class: 'tag', text: 'doc' }),
+        h('span', { class: 'problem-text', text: item.title }),
+        h('span', { class: 'dim', text: item.renamed ? `${item.path} → pages/${item.renamed}` : item.path }),
+      ))),
+      ...(skipped.length > 0
+        ? [h('p', {
+          class: 'dim',
+          text: `${skipped.length} 个收编不了：${skipped.map((item) => `${item.path}（${item.reason}）`).join('；')}`,
+        })]
+        : []),
+    ],
+    submitLabel: '收编',
+  }, async (values) => {
+    const payload = await api.importOrphans({
+      moduleId: values.moduleId,
+      items: items.map((item) => ({ path: item.path })),
+    })
+    applyState(payload)
+    return payload
+  }, openImportReport)
+}
+
+/** 收编回执：收了几页、哪些文件改了名，落盘了什么就说什么。 */
+function openImportReport(payload) {
+  const imported = payload?.imported ?? []
+  const skipped = payload?.skipped ?? []
+  const renamed = imported.filter((item) => item.renamed)
+
+  const nodes = [
+    h('p', { text: `已收编 ${imported.length} 页：${imported.map((item) => item.title).join('、')}` }),
+    h('ul', { class: 'problems' }, ...imported.map((item) => h('li', { class: 'problem' },
+      h('span', { class: 'tag', text: item.kind }),
+      h('span', { class: 'problem-text', text: item.title }),
+      h('span', { class: 'dim', text: locationOf(item) + (item.renamed ? `（原 ${item.path}）` : '') }),
+    ))),
+  ]
+  if (renamed.length > 0) {
+    nodes.push(h('p', {
+      class: 'dim',
+      text: `${renamed.length} 个文件名当不了 page id，已经改过名 —— 文件名就是正文位置，清单靠它对齐。`,
+    }))
+  }
+  if (skipped.length > 0) {
+    nodes.push(h('p', {
+      class: 'dim',
+      text: `${skipped.length} 个没收编：${skipped.map((item) => `${item.path}（${item.reason}）`).join('；')}`,
+    }))
+  }
+  openPanel('收编结果', nodes)
+}
+
+async function openDeleteOrphan(path) {
+  if (!await ensureFresh('删除')) return
   openModal({
     title: `删除 ${path}`,
     fields: [],
@@ -1139,7 +1316,8 @@ function openDeleteOrphan(path) {
 }
 
 /** 闲置素材：删之前服务端会照磁盘当下的正文再核一遍引用，真要还有人用会拒绝。 */
-function openDeleteUnusedAsset(path) {
+async function openDeleteUnusedAsset(path) {
+  if (!await ensureFresh('删除')) return
   openModal({
     title: `删除 ${path}`,
     fields: [],
@@ -1165,13 +1343,27 @@ async function boot() {
   watch()
 }
 
-/** 轮询指纹：外部改动（Agent、手工编辑）一到就标记陈旧并拦下保存，见 docs/adr/0006。 */
+/**
+ * 轮询指纹：外部改动（Agent、手工编辑、往 pages/ 里丢文件）一到就标记陈旧并拦下保存，
+ * 见 docs/adr/0006。
+ *
+ * 核对结果也要跟着刷新：只标陈旧而不更新 problems，刚丢进 pages/ 的 md 在角标与核对面板里
+ * 根本看不见，看着就像「没识别到」，非得手动重载。清单仍旧以磁盘为准，这里只读不写。
+ */
 function watch() {
   setInterval(async () => {
     try {
       const payload = await api.state()
       if (payload.revision && payload.revision !== state.revision && !state.stale) {
+        state.problems = payload.problems ?? []
         markStale()
+        const orphans = state.problems.filter((problem) => problem.kind === 'orphan')
+        if (orphans.length > 0) {
+          state.notice = {
+            kind: 'error',
+            text: `磁盘上多了 ${orphans.length} 个没进清单的文件，「核对」里可以一次收编。`,
+          }
+        }
         render()
       }
     } catch {

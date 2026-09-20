@@ -40,13 +40,23 @@ const site = () => ({
 
 let caseId = 0
 
-/** 装 DOM、假装服务端、把前端跑起来，返回可断言的 document 与收到的请求。 */
-async function bootEditor({ problems = [], tree = site() } = {}) {
+/**
+ * 装 DOM、假装服务端、把前端跑起来，返回可断言的 document 与收到的请求。
+ *
+ * `responses` 按路径给假响应；轮询定时器换成手工把手（`tick()`），
+ * `setState()` 换掉下次 /api/state 会读到的东西 —— 用来演「磁盘被外部改了」。
+ */
+async function bootEditor({ problems = [], tree = site(), responses = {}, notFound = [] } = {}) {
   installDom()
   const document = globalThis.document
   document.body.innerHTML = '<div id="app"></div>'
-  // 轮询指纹的定时器会让测试进程吊着，换成空实现
-  globalThis.setInterval = () => 0
+
+  let poll = null
+  let current = { revision: 'r1', problems }
+  globalThis.setInterval = (fn) => {
+    poll = fn
+    return 0
+  }
 
   const calls = []
   globalThis.fetch = async (url, options = {}) => {
@@ -56,15 +66,30 @@ async function bootEditor({ problems = [], tree = site() } = {}) {
       path: parsed.pathname,
       body: options.body ? JSON.parse(options.body) : null,
     })
+    if (notFound.includes(parsed.pathname)) {
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({ error: `没有这个接口：${options.method ?? 'GET'} ${parsed.pathname}` }),
+      }
+    }
     const payload = parsed.pathname === '/api/state'
-      ? { sites: [{ id: 'demo' }], id: 'demo', revision: 'r1', site: tree, problems }
-      : {}
+      ? { sites: [{ id: 'demo' }], id: 'demo', revision: current.revision, site: tree, problems: current.problems }
+      : responses[parsed.pathname] ?? {}
     return { ok: true, status: 200, json: async () => payload }
   }
 
   await import(`${MAIN}?case=${caseId += 1}`)
   await new Promise((resolve) => setTimeout(resolve, 20))
-  return { document, window: globalThis.window, calls }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
+  return {
+    document,
+    window: globalThis.window,
+    calls,
+    tick: async () => { await poll(); await settle() },
+    setState: (next) => { current = { ...current, ...next } },
+    settle,
+  }
 }
 
 /**
@@ -446,4 +471,148 @@ test('页面菜单能直接建下级', async () => {
   const create = [...document.querySelectorAll('.menu .menu-item')].find((node) => node.textContent === '新建下级页面')
   create.click()
   assert.match(document.querySelector('.modal-box h2').textContent, /在「B」下新建页面/)
+})
+
+/* ---------- 孤儿 md 的收编 ---------- */
+
+const orphan = (path) => ({ kind: 'orphan', path, message: `孤儿文件：${path} 没有被清单引用` })
+
+test('服务端还是旧进程时，报错要说清「重启编辑器」', async () => {
+  // 前端每次请求都现读磁盘上的 bundle，服务端是启动时载入的：改了代码而不重启就会这样
+  const { document, settle } = await bootEditor({
+    problems: [orphan('pages/说明.md')],
+    notFound: ['/api/orphans/plan'],
+  })
+
+  document.getElementById('problems-btn').click()
+  const bulk = [...document.querySelectorAll('.modal-actions button')]
+    .find((node) => node.textContent.includes('全部收编'))
+  bulk.click()
+  await settle()
+
+  const text = document.getElementById('notice').textContent
+  assert.match(text, /没有这个接口/)
+  assert.match(text, /重启/)
+})
+
+test('外部丢进 pages/ 的 md：轮询一到，核对角标与提示立刻跟上', async () => {
+  const { document, tick, setState } = await bootEditor()
+  assert.equal(document.getElementById('problems-count').textContent, '0')
+
+  // 模拟有人把文件拷进 pages/：指纹变了，孤儿文件出现在新的核对结果里
+  setState({ revision: 'r2', problems: [orphan('pages/说明.md')] })
+  await tick()
+
+  assert.equal(document.getElementById('problems-count').textContent, '1', '角标要跟着新文件走，不用手动重载')
+  assert.match(document.getElementById('notice').textContent, /没进清单/)
+  assert.equal(document.getElementById('status').textContent, '陈旧')
+})
+
+test('核对面板能一次把 pages/ 下的孤儿 md 收编成 doc 页', async () => {
+  const items = [
+    { path: 'pages/extra.md', kind: 'doc', id: 'extra', title: '附注', renamed: null, titleFromHeading: true },
+    { path: 'pages/说明.md', kind: 'doc', id: 'doc-1', title: '收编说明', renamed: 'doc-1.md', titleFromHeading: true },
+  ]
+  const { document, window, calls, settle } = await bootEditor({
+    problems: [orphan('pages/extra.md'), orphan('pages/说明.md')],
+    responses: {
+      '/api/orphans/plan': { items, skipped: [] },
+      '/api/orphans/import': { id: 'demo', revision: 'r2', site: site(), problems: [], imported: items, skipped: [] },
+    },
+  })
+
+  document.getElementById('problems-btn').click()
+  const bulk = [...document.querySelectorAll('.modal-actions button')]
+    .find((node) => node.textContent.includes('全部收编'))
+  assert.ok(bulk, '核对面板要有批量出口')
+  assert.match(bulk.textContent, /2 个 md/)
+
+  bulk.click()
+  await settle()
+  const box = document.querySelector('.modal-box')
+  assert.match(box.querySelector('h2').textContent, /收编 2 个 md/)
+  assert.match(box.textContent, /pages\/说明\.md → pages\/doc-1\.md/, '改名要在动手前列出来')
+  assert.match(box.textContent, /收编说明/)
+
+  box.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))
+  await settle()
+
+  const call = calls.find((item) => item.path === '/api/orphans/import')
+  assert.deepEqual(call.body.items, [{ path: 'pages/extra.md' }, { path: 'pages/说明.md' }])
+  assert.equal(call.body.moduleId, 'login')
+  assert.equal(call.body.baseRevision, 'r1')
+  // 收编回执另开一个面板，改名与落点都写清楚
+  const report = document.querySelector('.modal-box')
+  assert.match(report.querySelector('h2').textContent, /收编结果/)
+  assert.match(report.textContent, /已收编 2 页/)
+  assert.match(report.textContent, /pages\/doc-1\.md（原 pages\/说明\.md）/)
+})
+
+test('陈旧但没有本地改动时，收编先自己重载一次再落盘', async () => {
+  const items = [{ path: 'pages/说明.md', kind: 'doc', id: 'doc-1', title: '收编说明', renamed: 'doc-1.md', titleFromHeading: true }]
+  const { document, window, calls, tick, setState, settle } = await bootEditor({
+    responses: {
+      '/api/orphans/plan': { items, skipped: [] },
+      '/api/orphans/import': { id: 'demo', revision: 'r3', site: site(), problems: [], imported: items, skipped: [] },
+    },
+  })
+
+  // 丢文件进 pages/ 的那一刻状态就是陈旧的 —— 这正是要收编的场景
+  setState({ revision: 'r2', problems: [orphan('pages/说明.md')] })
+  await tick()
+  assert.equal(document.getElementById('status').textContent, '陈旧')
+
+  document.getElementById('problems-btn').click()
+  const bulk = [...document.querySelectorAll('.modal-actions button')]
+    .find((node) => node.textContent.includes('全部收编'))
+  const reads = () => calls.filter((item) => item.path === '/api/state').length
+  const before = reads()
+
+  bulk.click()
+  await settle()
+  document.querySelector('.modal-box').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))
+  await settle()
+
+  assert.equal(reads(), before + 1, '落盘前应自己重载一次，不能拿陈旧指纹去撞 409')
+  const posted = calls.find((item) => item.path === '/api/orphans/import')
+  assert.equal(posted.body.baseRevision, 'r2', '用的是重载后的指纹')
+  assert.match(document.querySelector('.modal-box h2').textContent, /收编结果/)
+})
+
+test('逐行收编时 page id 与标题按计划预填，改 id 相当于给文件改名', async () => {
+  const { document, window, calls, settle } = await bootEditor({
+    problems: [orphan('pages/说明.md')],
+    responses: {
+      '/api/orphans/plan': {
+        items: [{ path: 'pages/说明.md', kind: 'doc', id: 'doc-1', title: '收编说明', renamed: 'doc-1.md', titleFromHeading: true }],
+        skipped: [],
+      },
+      '/api/orphan/import': { id: 'demo', revision: 'r2', site: site(), problems: [], imported: [], skipped: [] },
+    },
+  })
+
+  document.getElementById('problems-btn').click()
+  document.querySelector('.modal-box .problem .more').click()
+  const entry = [...document.querySelectorAll('.menu .menu-item')].find((node) => node.textContent === '收编为页面')
+  entry.click()
+  await settle()
+
+  const box = document.querySelector('.modal-box')
+  const fields = [...box.querySelectorAll('.modal-field input')]
+  assert.deepEqual(fields.map((node) => node.value), ['doc-1', '收编说明'])
+  assert.match(box.textContent, /文件名得改成 doc-1\.md/)
+
+  fields[0].value = 'intro'
+  box.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }))
+  await settle()
+
+  const call = calls.find((item) => item.path === '/api/orphan/import')
+  assert.deepEqual(call.body, {
+    path: 'pages/说明.md',
+    moduleId: 'login',
+    pageId: 'intro',
+    title: '收编说明',
+    baseRevision: 'r1',
+    withFiles: false, // 弹层的公共字段，收编用不上
+  })
 })

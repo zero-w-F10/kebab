@@ -182,6 +182,46 @@ test('orphan 的导入与删除走 HTTP 也是通的', async (t) => {
   assert.ok(!existsSync(join(api.dir, 'pages', '多出来的.md')))
 })
 
+test('孤儿 md 的计划与批量收编走 HTTP 也是通的', async (t) => {
+  const api = await serve(t)
+  write(api.workspace, 'sites/demo/pages/说明.md', '# 收编说明\n\n正文\n')
+  write(api.workspace, 'sites/demo/pages/extra.md', '## 附注\n')
+
+  const plan = await api.get('/api/orphans/plan')
+  assert.equal(plan.status, 200)
+  const byPath = Object.fromEntries(plan.body.items.map((item) => [item.path, item]))
+  assert.deepEqual(byPath['pages/说明.md'], {
+    path: 'pages/说明.md',
+    kind: 'doc',
+    id: 'doc-1',
+    title: '收编说明',
+    renamed: 'doc-1.md',
+    titleFromHeading: true,
+  })
+  assert.equal(byPath['pages/extra.md'].title, '附注')
+  assert.equal(byPath['pages/extra.md'].renamed, null)
+
+  const state = (await api.get('/api/state')).body
+  const stale = await api.post('/api/orphans/import', {
+    moduleId: 'login',
+    items: [{ path: 'pages/extra.md' }],
+    baseRevision: '不是当前指纹',
+  })
+  assert.equal(stale.status, 409, '收编要重写清单，陈旧写入一样拦下')
+
+  const imported = await api.post('/api/orphans/import', {
+    moduleId: 'login',
+    items: [{ path: 'pages/说明.md' }, { path: 'pages/extra.md' }],
+    baseRevision: state.revision,
+  })
+  assert.equal(imported.status, 200)
+  assert.deepEqual(imported.body.imported.map((item) => [item.id, item.title]), [['doc-1', '收编说明'], ['extra', '附注']])
+  assert.equal(imported.body.problems.filter((problem) => problem.kind === 'orphan').length, 0)
+  assert.ok(!existsSync(join(api.dir, 'pages', '说明.md')), '文件名不合规的改过名了')
+  assert.equal(readFileSync(join(api.dir, 'pages', 'doc-1.md'), 'utf8'), '正文\n', 'H1 升成标题，正文里抹掉')
+  assert.equal(readFileSync(join(api.dir, 'pages', 'extra.md'), 'utf8'), '## 附注\n')
+})
+
 test('POST /api/build 与 npm run build 同路，产物能经 /build/ 预览', async (t) => {
   const api = await serve(t)
 

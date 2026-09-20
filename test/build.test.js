@@ -124,6 +124,33 @@ test('正文里的 Markdown 表格落在正文容器里，且样式表给它框�
   assert.match(main, /background:\s*var\(--kebab-panel\)/, '正文区要铺白底，表格的浅底才有对比')
 })
 
+test('围栏代码渲染成代码卡片，样式表给足了滚动、内边距与记号配色', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id } = makeSite(workspace)
+  write(workspace, `sites/${id}/pages/login-doc.md`,
+    '## 契约\n\n```json\n{"dfromCode": "500103", "rid": true}\n```\n\n```text\n一段正文\n```\n')
+
+  buildSite(workspace, byId(workspace, id))
+  const dist = join(workspace, 'sites', id, 'dist')
+
+  const html = readFileSync(join(dist, 'login-doc.html'), 'utf8')
+  assert.match(html, /class="kebab-prose">[\s\S]*<div class="kebab-code" data-lang="json">/, '围栏要在正文里，而且是代码卡片')
+  assert.match(html, /<span class="kebab-code-lang">json<\/span>/, '右上角挂语言牌子')
+  assert.match(html, /<span class="kebab-tok-key">&quot;dfromCode&quot;<\/span>/, '键名要着好色')
+  assert.match(html, /<span class="kebab-tok-literal">true<\/span>/)
+  assert.match(html, /class="kebab-code is-text"/, 'text 围栏另走一套（折行、不挂牌子）')
+  assert.ok(!html.includes('kebab-code-lang">text'), 'text 围栏不挂牌子，免得把正文挂成代码')
+
+  // 这几条漏了，产物就是一片没有内边距、不能横向滚动的灰底 —— 踩过的坑
+  const css = readFileSync(join(dist, 'kebab.css'), 'utf8')
+  const block = css.match(/\.kebab-prose \.kebab-code-block \{[^}]*\}/)[0]
+  assert.match(block, /overflow-x:\s*auto/)
+  assert.match(block, /padding:\s*16px 18px/)
+  assert.match(css, /\.kebab-prose \.kebab-code-block code \{[^}]*background:\s*none/, '块里的 code 要清掉行内 code 的底色')
+  assert.match(css, /\.kebab-code\.is-text \.kebab-code-block \{[^}]*white-space:\s*pre-wrap/, 'text 围栏要折行')
+  assert.match(css, /\.kebab-tok-key \{[^}]*color:/, '记号配色要跟样式表一起发出去')
+})
+
 test('悬空引用拦住构建，不出产物', (t) => {
   const workspace = makeWorkspace(t)
   const { id, dir } = makeSite(workspace)

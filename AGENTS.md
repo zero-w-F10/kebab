@@ -16,6 +16,6 @@
 
 ## 状态
 
-构建管线支持多个产品原型：`npm run doctor` 核对全部，`npm run build [site-id...]` 产出各自的 `sites/<id>/dist/` 与根门户页。`npm test` 跑回归（`test/` 下：doctor 规则、导入校验、编辑器数据层、服务端接口、doc 编辑器、编辑器交互）。编辑器用 `npm run edit -- --site <id>` 启动：界面是顶部工具栏 + 左树 + 内容区，标题双击就地改、每个节点的操作收在行尾的「⋯」里（照 axhub make 的习惯），工作区级的按钮都在顶部；能改导航树（增删、改标题、拖行首的「⠿」握把排顺序与调层级 —— 行的中间三分之一就是「变成下级」，page 与 module 都能拖），doc 正文是块式所见即所得（Milkdown Crepe），粘贴的截图自动落 `assets/`；orphan 的导入/删除出口在核对面板每行的「⋯」里。
+构建管线支持多个产品原型：`npm run doctor` 核对全部，`npm run build [site-id...]` 产出各自的 `sites/<id>/dist/` 与根门户页。`npm test` 跑回归（`test/` 下：doctor 规则、导入校验、编辑器数据层、服务端接口、doc 编辑器、编辑器交互）。编辑器用 `npm run edit -- --site <id>` 启动：界面是顶部工具栏 + 左树 + 内容区，标题双击就地改、每个节点的操作收在行尾的「⋯」里（照 axhub make 的习惯），工作区级的按钮都在顶部；能改导航树（增删、改标题、拖行首的「⠿」握把排顺序与调层级 —— 行的中间三分之一就是「变成下级」，page 与 module 都能拖），doc 正文是块式所见即所得（Milkdown Crepe），粘贴的截图自动落 `assets/`；orphan 的收编（单个或页面底部一次全收编）/删除出口在核对面板里。
 
 `dist/` 是生成物，手改会在下一次构建被覆盖。

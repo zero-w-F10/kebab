@@ -4,6 +4,8 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
+  renameSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -402,40 +404,274 @@ function stripEmptyBreaks(text) {
   return { text: next, stripped }
 }
 
+/* ---------- 孤儿文件：收编为页面 ---------- */
+
 /**
- * orphan file 的两个出口之一：导入为页面。
- * 只往清单里加一条，磁盘上的文件原地不动 —— 它就是这一页的正文。
+ * 只认 pages/ 或 prototypes/ 下的单个条目，挡掉越界与多层路径。
+ * 这里刻意不校验 id —— 文件名当不了 page id（中文、带点、不是 .md）是常态，
+ * 收编时改名让它合规，删除时更是跟 id 无关。
  */
-export function importOrphan(workspace, id, { path, moduleId, title }, baseRevision) {
+function orphanFileOf(dir, path) {
+  const isDoc = typeof path === 'string' && path.startsWith('pages/')
+  const isProto = typeof path === 'string' && path.startsWith('prototypes/')
+  if (!isDoc && !isProto) throw new BadRequest(`不是 pages/ 或 prototypes/ 下的路径：${path}`)
+
+  const name = path.slice(path.indexOf('/') + 1)
+  if (!name || name.includes('/') || name.includes('\\') || name.startsWith('.')) {
+    throw new BadRequest(`路径不合法：${path}`)
+  }
+  const root = join(dir, isDoc ? 'pages' : 'prototypes')
+  return { isDoc, name, file: join(root, name) }
+}
+
+/** 文件名 → 合规 page id。纯中文、纯符号折不出东西时返回 null，由调用方另编号。 */
+function idFromName(name) {
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  return ID_PATTERN.test(slug) ? slug : null
+}
+
+/** 正文里第一条标题：收编时拿它当页面标题的默认值。 */
+function firstHeading(text) {
+  const lines = text.split('\n')
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(lines[index])
+    if (match) return { level: match[1].length, title: match[2].trim(), line: index }
+  }
+  return null
+}
+
+/** 抹掉顶部那行 H1 与它后面的空行，其余一个字节都不动。 */
+function stripHeading(text, heading) {
+  const lines = text.split('\n')
+  let end = heading.line + 1
+  while (end < lines.length && lines[end].trim() === '') end += 1
+  return [...lines.slice(0, heading.line), ...lines.slice(end)].join('\n')
+}
+
+/** 中文名之类的折不出 id 时按序号编：doc-1、doc-2…… 跳过已被占用的。 */
+function nextFreeId(taken, base = 'doc') {
+  for (let n = 1; ; n += 1) {
+    const id = `${base}-${n}`
+    if (!taken.has(id)) return id
+  }
+}
+
+/** 清单里已经声明的 page id。与「磁盘上占着名字的」分开：前者撞上就得另编号。 */
+function declaredIds(site) {
+  return new Set(flattenPages(site).map((page) => page.id))
+}
+
+/** 孤儿文件其实是某一页的正文时（Windows 上文件名只差大小写）的解释。 */
+const samePageReason = (path) => `${path} 已经是清单里某一页的正文，只是文件名大小写对不上；把文件名改成与 page id 完全一致再收编`
+
+/** 清单里每一页正文的真实路径。文件不存在（悬空引用）时退回字面路径。 */
+function declaredFilesOf(dir, site) {
+  return new Set(flattenPages(site).map((page) => realPath(contentPathOf(dir, page))))
+}
+
+/**
+ * 比对「是不是同一个文件」用真实路径：Windows 上 `Extra.md` 与 `extra.md` 指向同一个文件，
+ * 字面量比较看不出来。文件不存在（悬空引用）时退回字面路径。
+ */
+function realPath(file) {
+  try {
+    return realpathSync.native(file)
+  } catch {
+    return file
+  }
+}
+
+/** 已经被占用的 page id：清单里声明的，加上磁盘上躺着的文件名与原型目录名。 */
+function occupiedIds(dir, site) {
+  const taken = declaredIds(site)
+  for (const sub of ['pages', 'prototypes']) {
+    const base = join(dir, sub)
+    if (!existsSync(base)) continue
+    for (const name of readdirSync(base)) {
+      if (name.startsWith('.')) continue
+      taken.add(sub === 'pages' ? name.replace(/\.[^.]+$/, '') : name)
+    }
+  }
+  return taken
+}
+
+/**
+ * 一个孤儿文件的收编计划：算它变成哪一页、标题叫什么、要不要改名、正文要不要动。
+ * 纯函数不碰磁盘 —— 预览与实际收编走的是同一份判断，两处不会各自漂移。
+ *
+ * 三条规则值得记着：
+ * - doc 页的正文位置写死是 `pages/<id>.md`，文件名必须**正好**是 `<id>.md`，大小写也算。
+ *   Windows 上 `CONTEXT.md` 与 `context.md` 是同一个文件，但 doctor 比文件名是大小写敏感的，
+ *   不改名就会既认不出这一页、又把它一直报成孤儿。改名是唯一会动使用者文件的地方，先列给人看
+ * - 正文的第一条标题拿来当页面标题；若它是顶格的 H1，就是这一页自己的标题，
+ *   正文里那几行抹掉 —— 留着会跟页头的大标题重复，见 docs/authoring.md
+ * - id 已经被清单占用的不再顶上去（那会写出重复 id），改用序号编
+ */
+function planOrphan(dir, site, path, { taken, declared, declaredFiles }, override = {}) {
+  const { isDoc, name, file } = orphanFileOf(dir, path)
+  if (!existsSync(file)) return { ok: false, reason: '磁盘上没有这个文件了' }
+  // 按真实路径比：Windows 上 `Extra.md` 与 `extra.md` 是同一个文件，那一页的正文就是它，
+  // 不能当孤儿搬走（Linux 上它们是两个文件，各算各的）
+  if (isDoc && declaredFiles.has(realPath(file))) return { ok: false, reason: samePageReason(path) }
+
+  if (!isDoc) {
+    if (!ID_PATTERN.test(name)) {
+      return { ok: false, reason: `原型目录名「${name}」不能当 page id，先把目录改成小写英文` }
+    }
+    return { ok: true, item: { path, kind: 'proto', id: name, title: name, file, target: file, renamed: null } }
+  }
+
+  const body = readFileSync(file, 'utf8')
+  const heading = firstHeading(body)
+  const stem = name.replace(/\.[^.]+$/, '')
+  const wanted = typeof override.pageId === 'string' ? override.pageId.trim() : ''
+  if (wanted && !ID_PATTERN.test(wanted)) {
+    throw new BadRequest(`page id 不合规：${wanted}（只收小写英文、数字、短横线，且以字母或数字开头）`)
+  }
+  if (wanted && taken.has(wanted) && wanted !== stem) throw new BadRequest(`${wanted} 已经被占用了`)
+
+  const derived = idFromName(stem)
+  const id = wanted || (derived && !declared.has(derived) ? derived : nextFreeId(taken))
+  const targetName = `${id}.md`
+  const target = join(dir, 'pages', targetName)
+  // 目录里真的躺着这个名字的文件（大小写敏感地存在）就绕开它 —— 只差大小写的那个是自己
+  if (targetName !== name && readdirSync(join(dir, 'pages')).includes(targetName)) {
+    if (wanted) throw new BadRequest(`pages/${targetName} 已经存在了，换个 page id`)
+    return { ok: false, reason: `pages/${targetName} 已经存在了` }
+  }
+
+  // 自己填了标题就以他填的为准；正文顶格那行 H1 是这一页自己的标题，一律抹掉 ——
+  // 留着会跟页头的大标题重复，见 docs/authoring.md
+  const custom = typeof override.title === 'string' ? override.title.trim() : ''
+  return {
+    ok: true,
+    item: {
+      path,
+      kind: 'doc',
+      id,
+      title: custom || heading?.title || stem,
+      file,
+      target,
+      renamed: targetName === name ? null : targetName,
+      titleFromHeading: !custom && Boolean(heading),
+      body: heading?.level === 1 ? stripHeading(body, heading) : null,
+    },
+  }
+}
+
+/** 收编计划里给编辑器看的那部分：内部路径与正文不必出门。 */
+const publicItem = ({ path, kind, id, title, renamed, titleFromHeading }) => ({
+  path, kind, id, title, renamed, titleFromHeading,
+})
+
+/** 当前全部孤儿页文件的收编计划。只读，给编辑器预览用。 */
+export function orphanPlan(workspace, id) {
+  const dir = resolveSite(workspace, id)
+  const site = loadSite(dir)
+  const scope = {
+    taken: occupiedIds(dir, site),
+    declared: declaredIds(site),
+    declaredFiles: declaredFilesOf(dir, site),
+  }
+  const items = []
+  const skipped = []
+
+  for (const problem of doctor(dir, site)) {
+    if (problem.kind !== 'orphan') continue
+    const plan = planOrphan(dir, site, problem.path, scope)
+    if (!plan.ok) {
+      skipped.push({ path: problem.path, reason: plan.reason })
+      continue
+    }
+    scope.taken.add(plan.item.id)
+    items.push(publicItem(plan.item))
+  }
+
+  return { items, skipped }
+}
+
+/**
+ * 把孤儿文件收编成页面：清单里加条目的同时，需要改名的文件也一并改名。
+ * 先算完全部计划再落盘，中途一个失败不影响其余的；清单只写一次。
+ */
+export function importOrphans(workspace, id, { moduleId, items }, baseRevision) {
   const dir = resolveSite(workspace, id)
   assertWrite(dir, baseRevision)
   const site = loadSite(dir)
 
-  const pageId = decodeOrphan(dir, path, site)
-  if (flattenPages(site).some((page) => page.id === pageId)) {
-    throw new BadRequest(`${pageId} 已经在清单里了`)
-  }
   const mod = (site.modules ?? []).find((entry) => entry.id === moduleId)
   if (!mod) throw new BadRequest(`没有这个 module：${moduleId}`)
 
-  const type = path.startsWith('prototypes/') ? 'proto' : 'doc'
-  mod.pages = [...(mod.pages ?? []), {
-    id: pageId,
-    type,
-    title: title?.trim() || pageId,
-  }]
-  writeSite(dir, site)
-  return stateOf(workspace, id)
+  const requested = Array.isArray(items) ? items : []
+  if (requested.length === 0) throw new BadRequest('没有要收编的文件')
+
+  const declaredFiles = declaredFilesOf(dir, site)
+  const scope = { taken: occupiedIds(dir, site), declared: declaredIds(site), declaredFiles }
+  const planned = []
+  const skipped = []
+
+  for (const request of requested) {
+    const { file } = orphanFileOf(dir, request.path)
+    if (declaredFiles.has(realPath(file))) throw new BadRequest(`${request.path} 已经被清单引用了，不是孤儿文件`)
+
+    const plan = planOrphan(dir, site, request.path, scope, request)
+    if (!plan.ok) {
+      skipped.push({ path: request.path, reason: plan.reason })
+      continue
+    }
+    scope.taken.add(plan.item.id)
+    planned.push(plan.item)
+  }
+
+  const imported = []
+  for (const item of planned) {
+    if (item.renamed) renameWithin(dir, item.file, item.target)
+    if (item.body !== null) writeFileSync(item.target, item.body, 'utf8')
+    mod.pages = [...(mod.pages ?? []), { id: item.id, type: item.kind, title: item.title }]
+    imported.push(publicItem(item))
+  }
+  if (imported.length > 0) writeSite(dir, site)
+
+  return { ...stateOf(workspace, id), imported, skipped }
 }
 
-/** orphan file 的另一个出口：删除磁盘上的文件（清单里本来就没有它）。 */
+/**
+ * 改名。只差大小写的要绕一下：Windows 的 MoveFile 对纯大小写改名不一定真的改掉目录项里的名字，
+ * 而 doctor 比文件名是大小写敏感的 —— 没改掉就永远认不出这一页。先挪到临时名再落位。
+ * 临时名以点开头，doctor 与小工具都跳过它，中途出事也不会被当成内容。
+ */
+function renameWithin(dir, from, to) {
+  if (from === to) return
+  if (from.toLowerCase() !== to.toLowerCase()) {
+    renameSync(from, to)
+    return
+  }
+  const temp = join(dir, 'pages', `.kebab-rename-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.md`)
+  renameSync(from, temp)
+  renameSync(temp, to)
+}
+
+/** 单个孤儿文件的收编：批量那条路的特例，编辑器逐行导入时走这里。 */
+export function importOrphan(workspace, id, { path, moduleId, pageId, title }, baseRevision) {
+  return importOrphans(workspace, id, {
+    moduleId,
+    items: [{ path, pageId, title }],
+  }, baseRevision)
+}
+
+/** 孤儿文件的另一个出口：删除磁盘上的文件（清单里本来就没有它）。 */
 export function deleteOrphan(workspace, id, path, baseRevision) {
   const dir = resolveSite(workspace, id)
   assertWrite(dir, baseRevision)
-  const pageId = decodeOrphan(dir, path, loadSite(dir))
 
-  if (path.startsWith('prototypes/')) rmSync(join(dir, 'prototypes', pageId), { recursive: true, force: true })
-  else unlinkSync(join(dir, 'pages', `${pageId}.md`))
+  const { isDoc, file } = orphanFileOf(dir, path)
+  if (!existsSync(file)) throw new BadRequest(`磁盘上没有这个文件：${path}`)
+  if (flattenPages(loadSite(dir)).some((page) => contentPathOf(dir, page) === file)) {
+    throw new BadRequest(`${path} 已经被清单引用了，先删掉那一页再删文件`)
+  }
+
+  if (isDoc) unlinkSync(file)
+  else rmSync(file, { recursive: true, force: true })
   return stateOf(workspace, id)
 }
 
@@ -466,24 +702,4 @@ function assetNameOf(path) {
     throw new BadRequest(`不是 assets/ 下的合法路径：${path}`)
   }
   return name
-}
-
-/** 把 doctor 报的 orphan 路径还原成 page id，并挡住越界与误伤。 */
-function decodeOrphan(dir, path, site) {
-  const isDoc = path.startsWith('pages/')
-  const isProto = path.startsWith('prototypes/')
-  if (!isDoc && !isProto) throw new BadRequest(`不是 pages/ 或 prototypes/ 下的路径：${path}`)
-
-  const name = path.slice(path.indexOf('/') + 1)
-  if (!name || name.includes('/') || name.startsWith('.')) throw new BadRequest(`路径不合法：${path}`)
-
-  const pageId = isDoc ? name.replace(/\.[^.]+$/, '') : name
-  if (!ID_PATTERN.test(pageId)) throw new BadRequest(`推导出的 page id 不合规：${pageId}`)
-  if (flattenPages(site).some((page) => page.id === pageId)) {
-    throw new BadRequest(`${pageId} 已被清单引用，不是孤儿文件`)
-  }
-  if (!existsSync(join(dir, isDoc ? 'pages' : 'prototypes', name))) {
-    throw new BadRequest(`磁盘上没有这个文件：${path}`)
-  }
-  return pageId
 }

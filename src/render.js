@@ -1,5 +1,7 @@
 import MarkdownIt from 'markdown-it'
 
+import { renderCodeBlock } from './highlight.js'
+
 /**
  * 创建 doc 页正文的渲染器。
  *
@@ -8,6 +10,12 @@ import MarkdownIt from 'markdown-it'
  */
 export function createRenderer(pageId) {
   const md = new MarkdownIt({ html: false, linkify: false })
+
+  // 围栏代码渲染成卡片，语言认得出来的在这里就着好色（构建期，产物里没有运行时脚本）
+  md.renderer.rules.fence = (tokens, index) => renderCodeBlock(
+    tokens[index].content,
+    tokens[index].info,
+  )
 
   md.core.ruler.push('kebab_section_number', (state) => {
     const counters = [0, 0, 0, 0, 0, 0, 0] // 下标即标题层级，h2 起算

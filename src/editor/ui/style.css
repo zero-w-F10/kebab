@@ -366,6 +366,11 @@ input:focus, select:focus { outline: 2px solid #cddcff; border-color: var(--acce
 
 .problem { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 13px; }
 
+/* 收编弹层一次可能列几十个文件，限高滚动，别把弹层撑出屏幕 */
+.modal-box .problems { max-height: 40vh; overflow: auto; }
+.modal-box .problem { align-items: baseline; }
+.modal-box .problem .dim { flex: 0 0 auto; text-align: right; word-break: break-all; }
+
 .problem-text { flex: 1 1 auto; min-width: 0; }
 
 .tag {
