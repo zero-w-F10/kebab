@@ -1,6 +1,6 @@
 {
   "name": "kebab",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "把 AI 导出的 HTML 原型、界面截图说明、流程图串成一份带导航树的静态站点",
