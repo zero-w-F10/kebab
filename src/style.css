@@ -6,6 +6,8 @@
   --kebab-muted: #8a9099;
   --kebab-accent: #2b6cff;
   --kebab-accent-soft: #eef3ff;
+  --kebab-nav-width: 264px;  /* 导航摊开时的宽度 */
+  --kebab-nav-rail: 44px;    /* 收起后那条窄轨的宽度 */
 }
 
 * { box-sizing: border-box; }
@@ -25,7 +27,7 @@ body {
 
 /* 导航树 —— 每个页面都内嵌完整一份 */
 .kebab-nav {
-  flex: 0 0 264px;
+  flex: 0 0 var(--kebab-nav-width);
   background: var(--kebab-panel);
   border-right: 1px solid var(--kebab-line);
   padding: 20px 0 40px;
@@ -37,7 +39,8 @@ body {
 
 .kebab-brand {
   display: block;
-  padding: 0 20px 16px;
+  /* 右边让出开关的位置：站点标题再长也不许钻到那颗按钮底下 */
+  padding: 0 46px 16px 20px;
   border-bottom: 1px solid var(--kebab-line);
   text-decoration: none;
   color: inherit;
@@ -78,6 +81,64 @@ body {
   font-weight: 600;
 }
 
+/* 导航树收起/展开。产物里不许有脚本（ADR-0001），所以开关本身就是一颗复选框，
+   排在整个 .kebab-shell 前面：收起规则靠 `:checked ~ .kebab-shell` 生效。见 ADR-0013。
+   展开时它贴在导航头部右侧，收起后落在窄轨里，位置由 --kebab-nav-width 推出来，
+   一处变量同时管着导航宽度与这颗按钮。 */
+.kebab-nav-toggle {
+  appearance: none;
+  -webkit-appearance: none;
+  position: fixed;
+  top: 20px;
+  left: calc(var(--kebab-nav-width) - 38px);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--kebab-muted);
+  cursor: pointer;
+}
+
+.kebab-nav-toggle:hover {
+  border-color: var(--kebab-line);
+  background: var(--kebab-bg);
+  color: var(--kebab-text);
+}
+
+.kebab-nav-toggle:focus-visible { outline: 2px solid var(--kebab-accent); outline-offset: 2px; }
+
+/* 雪佛龙：两个边框拼一角再转 45°。左指＝点它收起，右指＝点它摊开。
+   转完的图形中心偏出半个身位，用 margin 补回来（正着偏左、反着偏右）。 */
+.kebab-nav-toggle::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  margin-left: 5px;
+  border-left: 1.6px solid currentColor;
+  border-bottom: 1.6px solid currentColor;
+  transform: rotate(45deg);
+}
+
+.kebab-nav-toggle:checked::before {
+  margin: 0 5px 0 0;
+  transform: rotate(-135deg);
+}
+
+/* 收起：导航缩成一条窄轨，里头只留这颗开关。正文与导航里的字一律 display: none ——
+   用 visibility 或透明度藏的话，看不见的链接还照样吃 Tab。 */
+.kebab-nav-toggle:checked,
+.kebab-nav-toggle:checked ~ .kebab-shell { --kebab-nav-width: var(--kebab-nav-rail); }
+
+.kebab-nav-toggle:checked ~ .kebab-shell .kebab-brand,
+.kebab-nav-toggle:checked ~ .kebab-shell .kebab-tree { display: none; }
+
 /* 下级页面再套一层 ul：整列缩进，并用一条细线提示层级 */
 .kebab-tree ul.kebab-sub,
 .kebab-overview-module ul.kebab-sub {
@@ -99,8 +160,10 @@ body {
   background: var(--kebab-panel);
 }
 
-/* doc 页 */
-.kebab-doc { padding: 36px 48px 80px; max-width: 880px; }
+/* doc 页。正文栏跟着窗口走，只留一道护栏 —— 超宽屏上一行拉两三千像素就没法读了，
+   1600px 时中文一行已接近 90 字。1440 / 1707 / 1920 这些常见宽度因此都铺得满，
+   右侧不再挂着一大块空白，正文里的截图也基本按原尺寸显示（见 docs/adr/0014）。 */
+.kebab-doc { padding: 36px 48px 80px; max-width: 1600px; }
 
 .kebab-page-head { margin-bottom: 28px; }
 .kebab-page-head h1 { margin: 6px 0 0; font-size: 26px; line-height: 1.35; }
@@ -126,6 +189,80 @@ body {
   border: 1px solid var(--kebab-line);
   border-radius: 8px;
   background: #fff;
+}
+
+/* 图片点开放大。产物里没有运行时脚本（ADR-0001），所以这一套全部走 HTML 的
+   popover：打开、按 Esc 退出、点层外退出都是浏览器原生行为。见 docs/adr/0012 */
+.kebab-zoom {
+  /* 行内：包一层按钮不该挪动图片在正文里的位置与基线 */
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: zoom-in;
+}
+
+.kebab-zoom:focus-visible,
+.kebab-zoom-out:focus-visible { outline: 2px solid var(--kebab-accent); outline-offset: 2px; }
+
+/* 放大层铺满视口、图居中：图的四周因此都是「空白」，点哪儿都退出。
+   图比视口高时（整页与手机上的长截图）不缩进视口 —— 那样连字都看不清 ——
+   改成顶头对齐、在放大层里上下滚。safe 把「不溢出就居中、溢出就顶头」
+   两件事用一句话说完，也就避开了 flex 居中裁掉溢出上沿的那个老坑。 */
+.kebab-prose .kebab-zoom-view:popover-open {
+  display: flex;
+  align-items: safe center;
+  justify-content: center;
+  position: fixed;
+  inset: 0;
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+/* 接住空白处的那颗透明按钮：铺满放大层，压在图下面。fixed 是为了长截图 ——
+   放大层一滚，绝对定位的按钮会跟着滚走，滚过一屏之后就再没有接点击的东西。
+   放大层里没有它的话，只有层外的点击能关（popover 的 light dismiss），
+   而这一层是铺满视口的，层外根本没有地方可点。 */
+.kebab-zoom-out {
+  position: fixed;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-out;
+}
+
+.kebab-prose .kebab-zoom-view img {
+  display: block;
+  /* 只卡宽度：高度留给放大层自己滚，长截图因此仍然是「原尺寸看字」 */
+  max-width: 92vw;
+  /* 正文里那圈边框、圆角与白底是给缩略图看的，放到原尺寸上看图要还给它本来面目 */
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: 0 18px 60px rgb(0 0 0 / 45%);
+  /* 点图也当点空白：交给下面那颗透明按钮，省一层叠一层的按钮 */
+  pointer-events: none;
+}
+
+.kebab-zoom-view::backdrop { background: rgb(16 20 26 / 72%); }
+
+/* 认不出 popover 的老浏览器：放大层那份副本会摊进正文，藏掉它。
+   代价只是这些浏览器没有放大，正文本身照旧 */
+@supports not selector(:popover-open) {
+  .kebab-zoom-view { display: none; }
 }
 
 .kebab-prose code {

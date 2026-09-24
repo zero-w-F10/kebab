@@ -151,6 +151,134 @@ test('围栏代码渲染成代码卡片，样式表给足了滚动、内边距�
   assert.match(css, /\.kebab-tok-key \{[^}]*color:/, '记号配色要跟样式表一起发出去')
 })
 
+test('正文图片点开可放大：走原生 popover，产物里仍没有一行脚本', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id } = makeSite(workspace)
+  write(workspace, `sites/${id}/pages/login-doc.md`,
+    '## 截图\n\n![改版后的登录页](assets/login-after.png)\n\n'
+    + '两张：![第一张](assets/a.png) 和 [![被链接的图](assets/b.png)](https://example.com/)\n')
+
+  buildSite(workspace, byId(workspace, id))
+  const html = readFileSync(join(join(workspace, 'sites', id, 'dist'), 'login-doc.html'), 'utf8')
+
+  assert.ok(!html.includes('<script'), '放大不许引入脚本 —— file:// 下要能直接双击打开')
+
+  const dom = new JSDOM(html)
+  const doc = dom.window.document
+  const triggers = [...doc.querySelectorAll('.kebab-prose .kebab-zoom')]
+  assert.equal(triggers.length, 2, '正文里的两张独立图片各自可放大（链接里的那张不包）')
+  assert.deepEqual(
+    triggers.map((btn) => btn.tagName),
+    ['BUTTON', 'BUTTON'],
+    '放大件必须是按钮：popovertarget 只认 button 与 input',
+  )
+
+  triggers.forEach((btn) => {
+    const target = btn.getAttribute('popovertarget')
+    const view = doc.getElementById(target)
+    assert.ok(view, `找不到 ${target} 对应的放大层`)
+    assert.equal(view.getAttribute('popover'), '', 'popover 留空才是 auto —— Esc 与 light dismiss 才生效')
+    assert.equal(view.getAttribute('role'), 'dialog')
+    assert.ok(view.closest('.kebab-prose'), '放大层要留在正文里，样式才吃得到')
+    assert.ok(view.querySelector('img'), '放大层里得有那张图')
+    assert.ok(view.querySelector(`.kebab-zoom-out[popovertarget="${target}"]`), '放大层里要有接住空白处点击的按钮')
+    assert.equal(btn.querySelector('img').getAttribute('src'), view.querySelector('img').getAttribute('src'))
+  })
+
+  // 两张图的 id 不同：同一个页面里 popover 的 id 撞车会开错层
+  const ids = triggers.map((btn) => btn.getAttribute('popovertarget'))
+  assert.equal(new Set(ids).size, 2)
+  assert.match(ids[0], /^login-doc-zoom-\d+$/, 'id 带 page id，便于在产物里定位')
+
+  // 已在链接里的图原样留着：按钮套进 a 里，一次点击会同时触发放大与跳转
+  const linked = doc.querySelector('.kebab-prose a img')
+  assert.ok(linked, '链接里的图还在')
+  assert.equal(linked.closest('.kebab-zoom'), null)
+
+  // 这几条样式漏了，点击要么关不掉，要么把图片挪位 —— 都是踩过的坑
+  const css = readFileSync(join(workspace, 'sites', id, 'dist', 'kebab.css'), 'utf8')
+  assert.match(css, /\.kebab-zoom \{[^}]*display:\s*inline/, '包一层按钮不许挪动图片在正文里的位置')
+  const layer = css.match(/\.kebab-prose \.kebab-zoom-view:popover-open \{[^}]*\}/)[0]
+  assert.match(layer, /position:\s*fixed/)
+  assert.match(layer, /inset:\s*0/)
+  assert.match(layer, /align-items:\s*safe center/, '不溢出居中、溢出顶头：长截图才滚得到头一行')
+  assert.match(layer, /overflow:\s*auto/, '长截图在放大层里滚，而不是缩进视口')
+  // 只卡宽度：高度上也卡一刀的话，整页/手机长截图点开反而比正文里更小
+  const big = css.match(/\.kebab-prose \.kebab-zoom-view img \{[^}]*\}/)[0]
+  assert.match(big, /max-width:\s*92vw/)
+  assert.ok(!/max-height/.test(big), '放大件不许再卡高度')
+  assert.match(css, /\.kebab-zoom-out \{[^}]*position:\s*fixed/, '接空白处的那颗透明按钮要铺满视口，长截图滚过一屏后还得在')
+  assert.match(css, /\.kebab-zoom-view img \{[^}]*pointer-events:\s*none/, '点图也当点空白：交给透明按钮')
+  assert.match(css, /\.kebab-zoom-view::backdrop \{[^}]*background/, '放大层背后要压暗')
+  assert.match(css, /@supports not selector\(:popover-open\) \{\s*\.kebab-zoom-view \{ display: none/, '认不出 popover 的浏览器里，那份副本不能摊进正文')
+})
+
+test('导航树能收起：开关是一颗复选框，靠 :checked 的兄弟选择器生效', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id } = makeSite(workspace)
+  buildSite(workspace, byId(workspace, id))
+  const dist = join(workspace, 'sites', id, 'dist')
+
+  const dom = new JSDOM(readFileSync(join(dist, 'login-doc.html'), 'utf8'))
+  const doc = dom.window.document
+  const toggle = doc.querySelector('.kebab-nav-toggle')
+  assert.ok(toggle, '每个页面都带这颗开关')
+  assert.equal(toggle.tagName, 'INPUT')
+  assert.equal(toggle.getAttribute('type'), 'checkbox', '不写脚本就只能靠复选框自己记状态')
+  assert.equal(toggle.getAttribute('aria-label'), '收起左侧导航树')
+  // 收起规则是 `.kebab-nav-toggle:checked ~ .kebab-shell …`：开关必须是 shell **前面的兄弟**，
+  // 挪进 shell 里（或挪到它后面）整套选择器就不成立 —— 这是结构的一部分
+  assert.equal(toggle.nextElementSibling.className, 'kebab-shell', '开关要挨着 .kebab-shell 且在它前面')
+  assert.ok(doc.querySelector('.kebab-shell .kebab-nav'), '导航还在 shell 里')
+  assert.ok(!readFileSync(join(dist, 'login-doc.html'), 'utf8').includes('<script'), '收起也不许引入脚本')
+
+  // 概览页同一套骨架；门户页没有导航树，也就不该有这颗开关
+  assert.match(readFileSync(join(dist, 'index.html'), 'utf8'), /class="kebab-nav-toggle"/)
+  buildTargets(workspace, [id])
+  assert.ok(
+    !readFileSync(join(workspace, 'dist', 'index.html'), 'utf8').includes('kebab-nav-toggle'),
+    '门户页没有导航树，别给它一颗点了没反应的开关',
+  )
+
+  // 这几条样式漏了，开关要么点了没反应，要么把藏起来的链接留在 Tab 里 —— 都是踩过的坑
+  const css = readFileSync(join(dist, 'kebab.css'), 'utf8')
+  assert.match(css, /--kebab-nav-width:\s*264px/)
+  assert.match(css, /--kebab-nav-rail:\s*44px/)
+  assert.match(css, /\.kebab-nav \{[^}]*flex:\s*0 0 var\(--kebab-nav-width\)/, '导航宽度要跟着变量走，收起才有地方改')
+  assert.match(
+    css,
+    /\.kebab-nav-toggle:checked,\s*\.kebab-nav-toggle:checked ~ \.kebab-shell \{ --kebab-nav-width: var\(--kebab-nav-rail\); \}/,
+    '一个变量同时管导航宽度与开关自己的位置',
+  )
+  assert.match(
+    css,
+    /\.kebab-nav-toggle:checked ~ \.kebab-shell \.kebab-brand,\s*\.kebab-nav-toggle:checked ~ \.kebab-shell \.kebab-tree \{ display: none; \}/,
+    '收起时导航里的字要 display: none —— 用 visibility 藏的话，看不见的链接照样吃 Tab',
+  )
+  const toggleCss = css.match(/\.kebab-nav-toggle \{[^}]*\}/)[0]
+  assert.match(toggleCss, /appearance:\s*none/, '复选框要自己画，不然露出的是系统那颗方框')
+  assert.match(toggleCss, /position:\s*fixed/, '开关固定在视口上，长文档滚下去也够得着')
+  assert.match(toggleCss, /left:\s*calc\(var\(--kebab-nav-width\) - 38px\)/)
+  assert.match(css, /\.kebab-nav-toggle::before \{[^}]*border-left[^}]*rotate\(45deg\)/s, '雪佛龙靠两条边拼，不额外引图标文件')
+  assert.match(css, /\.kebab-nav-toggle:checked::before \{[^}]*rotate\(-135deg\)/, '收起后箭头要掉头指向右')
+  assert.match(css, /\.kebab-brand \{[^}]*padding:\s*0 46px 16px 20px/, '标题右边让出开关的位置，长标题才不会钻到按钮底下')
+})
+
+test('正文栏跟着窗口走，不留 880px 那种死上限', (t) => {
+  const workspace = makeWorkspace(t)
+  const { id } = makeSite(workspace)
+  buildSite(workspace, byId(workspace, id))
+  const css = readFileSync(join(workspace, 'sites', id, 'dist', 'kebab.css'), 'utf8')
+
+  const doc = css.match(/\.kebab-doc \{[^}]*\}/)[0]
+  const cap = Number(doc.match(/max-width:\s*(\d+)px/)[1])
+  // 要的是「右边那一大块空白没了」：1440 / 1707 / 1920 这些常见宽度都得铺得满
+  assert.ok(cap >= 1440, `正文栏上限 ${cap}px 太窄，1920 的屏上又会挂一块空白`)
+  // 但也不能一路铺到超宽屏的边：一行中文两千字，读起来就散了
+  assert.ok(cap <= 1800, `正文栏上限 ${cap}px 太宽，超宽屏上一行拉太长`)
+  assert.match(doc, /padding:\s*36px 48px 80px/, '正文栏的边距不跟着宽度一起长')
+})
+
 test('悬空引用拦住构建，不出产物', (t) => {
   const workspace = makeWorkspace(t)
   const { id, dir } = makeSite(workspace)

@@ -47,6 +47,11 @@ export function renderNav(site, currentId) {
 </nav>`
 }
 
+/**
+ * 页面骨架。导航树的收起开关是一颗复选框，刻意排在 .kebab-shell **前面** ——
+ * 收起规则靠 `:checked ~ .kebab-shell .kebab-nav` 生效，这是结构的一部分，
+ * 挪进 shell 里选择器就不成立了。产物里没有脚本，见 docs/adr/0001 与 docs/adr/0013。
+ */
 export function renderShell(site, page, body) {
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -59,6 +64,7 @@ export function renderShell(site, page, body) {
 <link rel="icon" type="image/svg+xml" href="kebab.svg" sizes="any">
 </head>
 <body>
+<input type="checkbox" class="kebab-nav-toggle" aria-label="收起左侧导航树" title="收起或展开左侧导航树">
 <div class="kebab-shell">
 ${renderNav(site, page.id)}
 <main class="kebab-main">
